@@ -256,7 +256,7 @@ private fun Meter07(m:Meter,back:()->Unit,take:(((String?)->Unit)->Unit),add:(Re
         }}
         if(m.status!="closed"){Spacer(Modifier.height(10.dp));Primary07("Новое показание"){addDialog=true}}
     }
-    if(addDialog)ReadingDialog07(m,null,take,{addDialog=false}){v,raw,roll,p,n->add(Reading(value=v,valueText=raw,rollover=roll,photoUri=p,note=n));addDialog=false}}
+    if(addDialog)ReadingDialog07(m,null,take,{addDialog=false}){v,raw,roll,p,n->add(Reading(value=v,valueText=raw,rollover=roll,photoUri=p,note=n));addDialog=false}
     editing?.let{old->ReadingDialog07(m,old,take,{editing=null}){v,raw,roll,p,n->edit(old.copy(value=v,valueText=raw,rollover=roll,photoUri=p,note=n));editing=null}}
     deleting?.let{t->Confirm07("Удалить показание?","Расход последующих записей будет автоматически пересчитан.",{deleting=null},{delete(t.id);deleting=null})}
 }

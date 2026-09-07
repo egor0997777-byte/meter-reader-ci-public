@@ -34,6 +34,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.math.BigDecimal
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.time.YearMonth
 import java.time.ZoneId
@@ -83,8 +84,9 @@ class V011MainActivity : ComponentActivity() {
                 it.write(bytes)
                 it.flush()
             }
+            verifySafWrite11(uri, bytes)
         }.onSuccess {
-            Toast.makeText(this, "Резервная копия сохранена", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Резервная копия сохранена и проверена", Toast.LENGTH_SHORT).show()
         }.onFailure {
             Toast.makeText(this, it.message ?: "Не удалось сохранить резервную копию", Toast.LENGTH_LONG).show()
         }
@@ -119,6 +121,25 @@ class V011MainActivity : ComponentActivity() {
         }
         restoreCallback?.invoke(result)
         restoreCallback = null
+    }
+
+    private fun verifySafWrite11(uri: Uri, expected: ByteArray) {
+        val expectedDigest = MessageDigest.getInstance("SHA-256").digest(expected)
+        val actualDigest = MessageDigest.getInstance("SHA-256")
+        var total = 0L
+        val stream = contentResolver.openInputStream(uri) ?: error("Файл создан, но не удалось проверить запись")
+        stream.use {
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = it.read(buffer)
+                if (read < 0) break
+                total += read
+                require(total <= expected.size.toLong()) { "Записанный файл имеет неожиданный размер" }
+                actualDigest.update(buffer, 0, read)
+            }
+        }
+        require(total == expected.size.toLong()) { "Резервная копия записана не полностью" }
+        require(actualDigest.digest().contentEquals(expectedDigest)) { "Резервная копия записана с ошибкой" }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -104,7 +104,8 @@ class V13MainActivity : ComponentActivity() {
                             repo = repo,
                             templateStore = templateStore,
                             saveReading = { meter, values, note, location, rollover ->
-                                val normalized = values.mapValues { MeterHistory.normalizeReadingText(it.value)!! }
+                                val normalized = ReadingValidator.normalizeForMeter(values, meter)
+                                    ?: error("Показание не соответствует разрядности или тарифным зонам счётчика")
                                 val primary = normalized["TOTAL"] ?: normalized["T1"] ?: normalized.values.first()
                                 val reading = Reading(
                                     value = primary.toDouble(),
@@ -217,11 +218,12 @@ private fun Walkthrough13(
         item { OutlinedTextField(note, { note = it.take(240) }, label = { Text("Заметка к периоду · необязательно") }, minLines = 2, modifier = Modifier.fillMaxWidth()) }
         message?.let { msg -> item { Text(msg, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) } }
         item { Button(onClick = {
-            val normalized = values.mapValues { MeterHistory.normalizeReadingText(it.value) }
-            if (normalized.values.any { it == null }) { message = "Заполните все показания цифрами"; return@Button }
-            val lowers = zones.any { zone -> val prev = previousValues[zone] ?: return@any false; val cur = normalized[zone] ?: return@any false; MeterHistory.consumption(prev, cur, current.integerDigits ?: 6, false).lowerThanPrevious }
+            val normalized = ReadingValidator.normalizeForMeter(values, current)
+            if (normalized == null) { message = "Проверьте формат, разрядность и все тарифные зоны"; return@Button }
+            val integerDigits = ReadingValidator.effectiveDigits(current).integer
+            val lowers = zones.any { zone -> val prev = previousValues[zone] ?: return@any false; val cur = normalized[zone] ?: return@any false; MeterHistory.consumption(prev, cur, integerDigits, false).lowerThanPrevious }
             if (lowers && !allowLower) { allowLower = true; message = "Значение меньше прошлого. Проверьте цифры. Если это переполнение, нажмите «Сохранить» ещё раз."; return@Button }
-            saveReading(current, normalized.mapValues { it.value!! }, note, location, lowers)
+            saveReading(current, normalized, note, location, lowers)
         }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Text(if (allowLower) "Сохранить с подтверждением" else "Сохранить и дальше", fontWeight = FontWeight.SemiBold) } }
         item { TextButton(onClick = { skip(current.id) }, modifier = Modifier.fillMaxWidth()) { Text("Пропустить в этом периоде") } }
         item { Text("Фото и расширенное редактирование доступны в «Учёт и история». В обходе фото не обязательно.", color = M13, fontSize = 11.sp) }

@@ -1,0 +1,63 @@
+name: Meter Reader Public CI
+
+on:
+  push:
+    branches:
+      - ci-import-v1.4
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: meter-reader
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '9.5.0'
+          cache-provider: basic
+
+      - name: Verify Gradle
+        working-directory: ${{ env.APP_DIR }}
+        run: gradle --version
+
+      - name: Unit tests
+        working-directory: ${{ env.APP_DIR }}
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Build debug APK, release APK and release AAB
+        working-directory: ${{ env.APP_DIR }}
+        run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease --stacktrace
+
+      - name: Verify build outputs
+        run: |
+          set -euo pipefail
+          test -n "$(find meter-reader/app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$(find meter-reader/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$(find meter-reader/app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' -print -quit)"
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: meter-reader-v1.4-builds
+          path: |
+            meter-reader/app/build/outputs/apk/debug/*.apk
+            meter-reader/app/build/outputs/apk/release/*.apk
+            meter-reader/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 7

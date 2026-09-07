@@ -1,0 +1,14 @@
+6df102cda461585fdfc8cc5e4db4a4c5cc9c1575 meter-reader/app/src/main/java/ru/egor/meters/BackupExport.kt
+e01df214426de4025613a8608ad91c5c2906048c meter-reader/app/src/main/java/ru/egor/meters/AppUnlockActivity.kt
+dcf1105338497f15dbb75c6fcf5131c1f4d69fd2 meter-reader/app/src/main/java/ru/egor/meters/BackupMetadata.kt
+a39f81864f08852582228803dd2c4a719e607917 meter-reader/build.gradle.kts
+e6961679fc95d6da9ab1dc56ee2e9d98ecbe6e63 meter-reader/gradle.properties
+3d522098df8f6e7e1d5fd28fa16e7c5a962992d5 meter-reader/settings.gradle.kts
+408d89eb8e60046e3c97ca9741686e6c30440a1e meter-reader/app/build.gradle.kts
+50e62e71a497d6f8ddb6de0508113c9c279677ff meter-reader/app/src/main/AndroidManifest.xml
+1f68055406718dcf714651e301a6f3bb07310182 meter-reader/app/src/main/res/drawable/ic_launcher_foreground.xml
+a8a8fa5518fcdb2db0385028800968b2667af71e meter-reader/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+a8a8fa5518fcdb2db0385028800968b2667af71e meter-reader/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+3a5ba01fe11a9511b7550df5240f74d680c81a8b meter-reader/app/src/main/res/values/colors.xml
+32c99c823facfa4647ada85a1743b806e35571a9 meter-reader/app/src/main/res/values/themes.xml
+9ba86b62432f82a38d7171f12c4f1a2ae0fa4440 meter-reader/app/src/main/res/xml/file_paths.xml

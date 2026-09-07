@@ -1,0 +1,180 @@
+package ru.egor.meters
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
+import java.util.Locale
+
+private val Accent010 = Color(0xFF6B5BC7)
+private val Bg010 = Color(0xFFF7F7FA)
+private val Muted010 = Color(0xFF77737F)
+private val Danger010 = Color(0xFFC33E49)
+private val Scheme010 = lightColorScheme(primary = Accent010, background = Bg010, surface = Color.White, error = Danger010)
+private val DateFormat010 = DateTimeFormatter.ofPattern("dd.MM.uuuu", Locale("ru"))
+
+class V010MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val repo = MeterRepository(this)
+        setContent {
+            MaterialTheme(colorScheme = Scheme010) {
+                ReminderHub010(repo) { startActivity(Intent(this, V011MainActivity::class.java)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReminderHub010(repo: MeterRepository, openMeters: () -> Unit) {
+    val context = LocalContext.current
+    val store = remember { ReminderSettingsStore(context) }
+    var data by remember { mutableStateOf(repo.load()) }
+    var screen by remember { mutableStateOf("home") }
+    var revision by remember { mutableIntStateOf(0) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        revision++
+    }
+
+    fun saveMeter(updated: Meter) {
+        data = data.map { address ->
+            address.copy(meters = address.meters.map { if (it.id == updated.id) updated else it })
+        }
+        repo.save(data)
+        data = repo.load()
+        revision++
+    }
+
+    Surface(Modifier.fillMaxSize(), color = Bg010) {
+        if (screen == "home") {
+            HubHome010(
+                data = data,
+                repo = repo,
+                store = store,
+                revision = revision,
+                openMeters = openMeters,
+                openReminders = { screen = "reminders" }
+            )
+        } else {
+            ReminderSettings010(
+                data = data,
+                repo = repo,
+                store = store,
+                revision = revision,
+                onBack = { screen = "home" },
+                requestPermission = {
+                    if (Build.VERSION.SDK_INT >= 33) permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                },
+                onChanged = { revision++ },
+                onMeterChanged = ::saveMeter
+            )
+        }
+    }
+}
+
+@Composable
+private fun HubHome010(
+    data: List<Address>,
+    repo: MeterRepository,
+    store: ReminderSettingsStore,
+    revision: Int,
+    openMeters: () -> Unit,
+    openReminders: () -> Unit
+) {
+    val today = LocalDate.now()
+    val month = YearMonth.from(today)
+    val dueAddresses = data.count { address ->
+        val settings = store.getAddress(address.id)
+        ReminderPolicy.transferStatus(today, TransferWindow(settings.startDay, settings.endDay, settings.enabled)) == TransferStatus.DUE &&
+            SubmissionWorkflow.statusForAddress(repo, address, month) != SubmissionStatus.COMPLETE
+    }
+    val verificationAttention = data.sumOf { address ->
+        address.meters.count { meter ->
+            meter.status != "closed" && ReminderPolicy.verificationStatus(meter.verificationUntil, today) in setOf(VerificationStatus.SOON, VerificationStatus.EXPIRED)
+        }
+    }
+    val ignored = revision
+
+    Column(
+        Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(20.dp)
+    ) {
+        Text("Мои счётчики", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Text("Локально, без аккаунта и сервера", color = Muted010, fontSize = 14.sp)
+        Spacer(Modifier.height(20.dp))
+
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = Color.White) {
+            Column(Modifier.padding(18.dp)) {
+                Text("Сегодня", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(if (dueAddresses == 0) "Передача показаний: всё спокойно" else "Пора передать: $dueAddresses", color = if (dueAddresses == 0) Muted010 else Accent010)
+                Text(if (verificationAttention == 0) "Поверка: срочных сроков нет" else "Поверка требует внимания: $verificationAttention", color = if (verificationAttention == 0) Muted010 else Danger010)
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+        Button(openMeters, Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(18.dp)) {
+            Text("Открыть счётчики", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(openReminders, Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(18.dp)) {
+            Text("Напоминания и поверка", fontSize = 16.sp)
+        }
+        Spacer(Modifier.weight(1f))
+        Text("Адресов: ${data.size} · счётчиков: ${data.sumOf { it.meters.count { m -> m.status != "closed" } }}", color = Muted010, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun ReminderSettings010(
+    data: List<Address>,
+    repo: MeterRepository,
+    store: ReminderSettingsStore,
+    revision: Int,
+    onBack: () -> Unit,
+    requestPermission: () -> Unit,
+    onChanged: () -> Unit,
+    onMeterChanged: (Meter) -> Unit
+) {
+    val context = LocalContext.current
+    var addressDialog by remember { mutableStateOf<Address?>(null) }
+    var meterDialog by remember { mutableStateOf<Meter?>(null) }
+    val notificationsGranted = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    val globallyEnabled = store.notificationsEnabled()
+    val ignored = revision
+    val month = YearMonth.now()
+
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 8.dp)) {
+        TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("‹  Главная") }
+        Text("Напоминания и поверка", fontSize = 27.sp, fontWeight = FontWeight.Bold)
+        Text("Проверка выполняется локально раз в день. Интернет не нужен.", color = Muted010, fontSize = 13.sp)
+        Spacer(Modifier.height(14.dp))

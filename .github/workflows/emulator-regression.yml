@@ -1,0 +1,111 @@
+name: Meter Reader Emulator Regression
+
+on:
+  push:
+    branches:
+      - ci-fix-v1.4
+    paths:
+      - 'meter-reader/**'
+      - '.github/scripts/android-preview.sh'
+      - '.github/scripts/android-preview-v13-compat.sh'
+      - '.github/scripts/android-v11-flow.sh'
+      - '.github/scripts/android-v12-db-check.sh'
+      - '.github/scripts/android-v14-backup-restore.sh'
+      - '.github/workflows/emulator-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: meter-reader
+  APK_PATH: meter-reader/app/build/outputs/apk/debug/app-debug.apk
+  PACKAGE_NAME: ru.egor.meters
+  MAIN_ACTIVITY: .V13MainActivity
+
+jobs:
+  emulator-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '9.5.0'
+          cache-provider: basic
+
+      - name: Unit tests
+        working-directory: ${{ env.APP_DIR }}
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Build debug APK
+        working-directory: ${{ env.APP_DIR }}
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Validate debug package
+        run: |
+          set -euo pipefail
+          test -s "$APK_PATH"
+          unzip -t "$APK_PATH" >/dev/null
+          grep -q 'versionCode = 140' meter-reader/app/build.gradle.kts
+          grep -q 'versionName = "1.4.0"' meter-reader/app/build.gradle.kts
+          AAPT=$(find "${ANDROID_HOME:?}/build-tools" -type f -name aapt -perm -111 | sort -V | tail -n 1)
+          test -x "$AAPT"
+          "$AAPT" dump permissions "$APK_PATH" | tee debug-permissions.txt
+          if grep -q 'android.permission.INTERNET' debug-permissions.txt; then
+            echo 'Unexpected INTERNET permission in built debug APK' >&2
+            exit 1
+          fi
+          if grep -q 'android.permission.ACCESS_NETWORK_STATE' debug-permissions.txt; then
+            echo 'Unexpected ACCESS_NETWORK_STATE permission in built debug APK' >&2
+            exit 1
+          fi
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run current-device emulator regressions
+        uses: ReactiveCircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disk-size: 2048M
+          emulator-boot-timeout: 1200
+          disable-animations: true
+          script: |
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-flow.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore.sh"
+
+      - name: Upload regression screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meter-reader-v1.4-regression-screenshots
+          path: android-preview-artifacts/*.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meter-reader-v1.4-emulator-apk
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
+          retention-days: 7

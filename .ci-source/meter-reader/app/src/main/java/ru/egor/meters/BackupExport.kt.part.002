@@ -1,0 +1,180 @@
+                require(declaredHash == sha256(data)) { "Контрольная сумма файла $path не совпадает" }
+            }
+            val dataBytes = entries["data.json"] ?: error("В архиве нет data.json")
+            databaseBytes = entries[DATABASE_ENTRY] ?: error("В архиве нет снимка Room DB")
+            require(databaseBytes.size <= MAX_DATABASE_BYTES && isSQLiteDatabase(databaseBytes)) { "Снимок Room DB повреждён" }
+            root = JSONObject(dataBytes.toString(StandardCharsets.UTF_8))
+            require(root.optString("format") == FORMAT && root.optInt("version") == version) {
+                "Данные резервной копии не соответствуют manifest"
+            }
+            photos = entries.filterKeys { it.startsWith("photos/") && it.endsWith(".jpg") }
+                .mapKeys { (path, _) -> path.removePrefix("photos/").removeSuffix(".jpg") }
+            require(entries.keys.all { it == "data.json" || it == DATABASE_ENTRY || (it.startsWith("photos/") && it.endsWith(".jpg")) }) {
+                "Архив содержит неизвестные файлы"
+            }
+        } else {
+            root = manifest
+            databaseBytes = null
+            photos = entries.filterKeys { it.startsWith("photos/") && it.endsWith(".jpg") }
+                .mapKeys { (path, _) -> path.removePrefix("photos/").removeSuffix(".jpg") }
+            require(entries.keys.all { it.startsWith("photos/") && it.endsWith(".jpg") }) {
+                "Архив содержит неизвестные файлы"
+            }
+        }
+
+        val addresses = fromJson(root, version)
+        val submissions = if (version >= 4) submissionsFromJson(root) else emptyList()
+        val metadata = if (version >= 4) BackupMetadataStore.fromJson(root.optJSONObject("metadata")) else BackupMetadata()
+        validate(addresses, submissions)
+        BackupMetadataStore.validate(metadata, addresses)
+
+        val readings = addresses.flatMap { it.meters }.flatMap { it.readings }
+        val readingIds = readings.map { it.id }.toSet()
+        val expectedPhotoIds = readings.filter { it.photoUri?.startsWith("backup://") == true }.map { it.id }.toSet()
+        require(photos.keys.all { it in readingIds }) { "Архив содержит фото без соответствующего показания" }
+        require(expectedPhotoIds == photos.keys) { "Резервная копия неполная: набор фото не совпадает с manifest" }
+        return BackupPayload(addresses, photos, submissions, databaseBytes, metadata)
+    }
+
+    fun prepareRestorePhotos(context: Context, payload: BackupPayload): PreparedRestore {
+        validateDatabaseSnapshot(context, payload)
+        if (payload.photos.isEmpty()) return PreparedRestore(payload.addresses, null)
+        val pictures = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
+        val required = payload.photos.values.sumOf { it.size.toLong() } + 1024L * 1024L
+        val available = runCatching { StatFs(pictures.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE)
+        require(available >= required) { "Недостаточно свободного места для восстановления фото" }
+
+        // Never delete old restore directories here. A previously successful restore may still
+        // reference those files from the live Room DB. Orphan cleanup must prove that no live
+        // reading references a directory before removing it; leaking a staging directory is safer
+        // than deleting committed user photos after a later failed restore.
+        val root = File(pictures, "restore_staging_${System.currentTimeMillis()}_${UUID.randomUUID()}")
+        require(root.mkdirs()) { "Не удалось подготовить временную область восстановления" }
+        return try {
+            val photoUris = payload.photos.mapValues { (readingId, data) ->
+                val file = File(root, "$readingId.jpg")
+                file.outputStream().use { it.write(data) }
+                require(file.length() == data.size.toLong()) { "Не удалось полностью записать фото $readingId" }
+                require(sha256(file.readBytes()) == sha256(data)) { "Ошибка проверки восстановленного фото $readingId" }
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file).toString()
+            }
+            val addresses = payload.addresses.map { address ->
+                address.copy(meters = address.meters.map { meter ->
+                    meter.copy(readings = meter.readings.map { reading ->
+                        reading.copy(photoUri = photoUris[reading.id])
+                    })
+                })
+            }
+            PreparedRestore(addresses, root)
+        } catch (t: Throwable) {
+            root.deleteRecursively()
+            throw t
+        }
+    }
+
+    fun abortPreparedRestore(prepared: PreparedRestore) {
+        prepared.rootDir?.deleteRecursively()
+    }
+
+    @Deprecated("Use prepareRestorePhotos so a failed database restore can clean the prepared files")
+    fun materializePhotos(context: Context, payload: BackupPayload): List<Address> =
+        prepareRestorePhotos(context, payload).addresses
+
+    fun rememberLocalGeneration(context: Context, bytes: ByteArray): Int {
+        require(bytes.isNotEmpty()) { "Пустая резервная копия" }
+        val dir = File(context.filesDir, "backup-generations")
+        require(dir.exists() || dir.mkdirs()) { "Не удалось создать локальное хранилище резервных копий" }
+        val temp = File(dir, ".pending-${UUID.randomUUID()}.zip")
+        temp.writeBytes(bytes)
+        val target = File(dir, "backup-${System.currentTimeMillis()}.zip")
+        require(temp.renameTo(target)) { "Не удалось зафиксировать локальную резервную копию" }
+        val backups = dir.listFiles { file -> file.isFile && file.name.startsWith("backup-") && file.name.endsWith(".zip") }
+            .orEmpty().sortedByDescending { it.lastModified() }
+        backups.drop(LOCAL_BACKUP_LIMIT).forEach { it.delete() }
+        File(dir, "last-successful.txt").writeText(target.name, StandardCharsets.UTF_8)
+        return backups.take(LOCAL_BACKUP_LIMIT).size
+    }
+
+    fun localGenerationCount(context: Context): Int {
+        val dir = File(context.filesDir, "backup-generations")
+        return dir.listFiles { file -> file.isFile && file.name.startsWith("backup-") && file.name.endsWith(".zip") }
+            ?.size?.coerceAtMost(LOCAL_BACKUP_LIMIT) ?: 0
+    }
+
+    fun csv(addresses: List<Address>): String {
+        val sb = StringBuilder("Адрес;Лицевой счёт;Получатель;Счётчик;Серийный номер;Дата;Зона;Показание;Единица;Примечание\r\n")
+        addresses.forEach { a -> a.meters.forEach { m -> m.readings.sortedBy { it.timestamp }.forEach { r ->
+            readingZoneValues(m, r).forEach { (zone, value) ->
+                val fields = listOf(a.name, m.account.ifBlank { a.account }, m.recipient.ifBlank { a.recipient }, m.name, m.serial, isoDate(r.timestamp), zone, value, m.unit, r.note)
+                sb.append(fields.joinToString(";") { csvCell(it) }).append("\r\n")
+            }
+        } } }
+        return "\uFEFF$sb"
+    }
+
+    fun transmissionText(address: Address): String {
+        val lines = mutableListOf("Показания счётчиков", address.name)
+        if (address.account.isNotBlank()) lines += "Лицевой счёт: ${address.account}"
+        if (address.recipient.isNotBlank()) lines += "Получатель: ${address.recipient}"
+        address.meters.filter { it.status != "closed" }.forEach { m ->
+            val last = m.readings.maxByOrNull { it.timestamp } ?: return@forEach
+            val account = m.account.ifBlank { address.account }
+            val recipient = m.recipient.ifBlank { address.recipient }
+            val meta = buildList { if (account.isNotBlank()) add("л/с $account"); if (recipient.isNotBlank()) add(recipient) }
+            val values = readingZoneValues(m, last).entries.joinToString("; ") { (zone, value) -> if (zone == "TOTAL") value else "$zone $value" }
+            lines += "${m.name}${m.serial.takeIf { it.isNotBlank() }?.let { " №$it" } ?: ""}: $values ${m.unit}${if(meta.isEmpty()) "" else " (${meta.joinToString(", ")})"}"
+        }
+        lines += "Подготовлено приложением «Мои счётчики». Передача в УК/РСО выполняется пользователем."
+        return lines.joinToString("\n")
+    }
+
+    private fun readingZoneValues(meter: Meter, reading: Reading): LinkedHashMap<String, String> {
+        val source = if (reading.zoneValues.isNotEmpty()) reading.zoneValues else mapOf("TOTAL" to MeterHistory.readingText(reading))
+        val zones = MeterZones.normalize(if (meter.tariffZones.isNotEmpty()) meter.tariffZones else source.keys)
+        return linkedMapOf<String, String>().apply {
+            zones.forEach { zone -> source[zone]?.let { put(zone, it) } }
+            source.forEach { (zone, value) -> if (zone !in this) put(zone, value) }
+        }
+    }
+
+    private fun createDatabaseSnapshot(context: Context, addresses: List<Address>, submissions: List<Submission>): ByteArray {
+        val name = "backup-snapshot-${UUID.randomUUID()}.db"
+        var snapshotDb: MeterDatabase? = null
+        return try {
+            snapshotDb = MeterDatabase.openTemporary(context, name)
+            MeterRepository(context, snapshotDb, false).restoreValidated(addresses, submissions)
+            snapshotDb.openHelper.writableDatabase.query("PRAGMA foreign_key_check").use { cursor ->
+                require(!cursor.moveToFirst()) { "Не удалось создать согласованный снимок Room DB" }
+            }
+            snapshotDb.openHelper.writableDatabase.query("PRAGMA integrity_check").use { cursor ->
+                require(cursor.moveToFirst() && cursor.getString(0) == "ok") { "Снимок Room DB не прошёл integrity_check" }
+            }
+            snapshotDb.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() }
+            snapshotDb.close()
+            snapshotDb = null
+            val file = context.getDatabasePath(name)
+            require(file.isFile && file.length() > 0L) { "Не удалось создать снимок Room DB" }
+            val bytes = file.readBytes()
+            require(bytes.size <= MAX_DATABASE_BYTES && isSQLiteDatabase(bytes)) { "Снимок Room DB повреждён" }
+            bytes
+        } finally {
+            runCatching { snapshotDb?.close() }
+            context.deleteDatabase(name)
+        }
+    }
+
+    private fun validateDatabaseSnapshot(context: Context, payload: BackupPayload) {
+        val bytes = payload.databaseBytes ?: return
+        require(bytes.size <= MAX_DATABASE_BYTES && isSQLiteDatabase(bytes)) { "Снимок Room DB повреждён" }
+        val name = "restore-snapshot-${UUID.randomUUID()}.db"
+        val dbFile = context.getDatabasePath(name)
+        val parent = dbFile.parentFile ?: error("Не удалось подготовить временную базу")
+        require(parent.exists() || parent.mkdirs()) { "Не удалось подготовить временную базу" }
+        val available = runCatching { StatFs(parent.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE)
+        require(available >= bytes.size.toLong() + 1024L * 1024L) { "Недостаточно свободного места для проверки базы данных" }
+        var snapshotDb: MeterDatabase? = null
+        try {
+            dbFile.outputStream().use { it.write(bytes) }
+            require(dbFile.length() == bytes.size.toLong()) { "Не удалось полностью записать временную базу" }
+            snapshotDb = MeterDatabase.openTemporary(context, name)
+            val dao = snapshotDb.meterDao()

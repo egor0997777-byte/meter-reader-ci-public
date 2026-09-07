@@ -1,0 +1,141 @@
+   account=pick(base.account,updated.account,current.account),
+   recipient=pick(base.recipient,updated.recipient,current.recipient)
+  )
+ }
+
+ private fun mergeMeter(base:Meter,updated:Meter,current:Meter):Meter{
+  val baseReadings=base.readings.associateBy{it.id};val updatedReadings=updated.readings.associateBy{it.id}
+  val removedIds=baseReadings.keys-updatedReadings.keys
+  val readings=current.readings.filterNot{it.id in removedIds}.toMutableList()
+  updated.readings.forEach{u->
+   val b=baseReadings[u.id]
+   if(b==null){
+    if(readings.none{it.id==u.id})readings+=u
+   }else if(u!=b){
+    val index=readings.indexOfFirst{it.id==u.id}
+    if(index>=0)readings[index]=mergeReading(b,u,readings[index])
+   }
+  }
+  return current.copy(
+   name=pick(base.name,updated.name,current.name),
+   unit=pick(base.unit,updated.unit,current.unit),
+   kind=pick(base.kind,updated.kind,current.kind),
+   serial=pick(base.serial,updated.serial,current.serial),
+   readings=readings,
+   integerDigits=pick(base.integerDigits,updated.integerDigits,current.integerDigits),
+   fractionDigits=pick(base.fractionDigits,updated.fractionDigits,current.fractionDigits),
+   previousMeterId=pick(base.previousMeterId,updated.previousMeterId,current.previousMeterId),
+   installedAt=pick(base.installedAt,updated.installedAt,current.installedAt),
+   verificationUntil=pick(base.verificationUntil,updated.verificationUntil,current.verificationUntil),
+   status=pick(base.status,updated.status,current.status),
+   account=pick(base.account,updated.account,current.account),
+   recipient=pick(base.recipient,updated.recipient,current.recipient),
+   tariffZones=pick(base.tariffZones,updated.tariffZones,current.tariffZones),
+   tariffSchedule=pick(base.tariffSchedule,updated.tariffSchedule,current.tariffSchedule),
+   location=pick(base.location,updated.location,current.location),
+   meteringPointId=pick(base.meteringPointId,updated.meteringPointId,current.meteringPointId)
+  )
+ }
+
+ private fun mergeReading(base:Reading,updated:Reading,current:Reading):Reading{
+  val explicitZones=updated.zoneValues!=base.zoneValues
+  val legacySingleValueChanged=updated.valueText!=base.valueText &&
+   (base.zoneValues.isEmpty() || base.zoneValues.keys==setOf("TOTAL"))
+  val mergedZones=when{
+   explicitZones->updated.zoneValues
+   legacySingleValueChanged&&!updated.valueText.isNullOrBlank()->mapOf("TOTAL" to updated.valueText.orEmpty())
+   else->current.zoneValues
+  }
+  val mergedPrimary=mergedZones["TOTAL"]?:mergedZones["T1"]?:current.valueText?:updated.valueText
+  val mergedPeriod=when{
+   updated.billingPeriod!=null&&updated.billingPeriod!=base.billingPeriod->updated.billingPeriod
+   else->current.billingPeriod
+  }
+  return current.copy(
+   value=mergedPrimary?.toDoubleOrNull()?:pick(base.value,updated.value,current.value),
+   timestamp=pick(base.timestamp,updated.timestamp,current.timestamp),
+   photoUri=pick(base.photoUri,updated.photoUri,current.photoUri),
+   note=pick(base.note,updated.note,current.note),
+   valueText=mergedPrimary,
+   rollover=pick(base.rollover,updated.rollover,current.rollover),
+   zoneValues=mergedZones,
+   billingPeriod=mergedPeriod
+  )
+ }
+
+ private fun <T> pick(base:T,updated:T,current:T):T=if(updated!=base)updated else current
+
+ private fun replaceAll(addresses:List<Address>,preserve:Boolean,restoredSubmissions:List<Submission>?){
+  val previous=if(preserve)dao.meters().associateBy{it.id}else emptyMap()
+  val previousPoints=if(preserve)dao.meteringPoints().associateBy{it.id}else emptyMap()
+  val incomingAddressIds=addresses.map{it.id}.toSet()
+  val preservedSubmissions=if(preserve)dao.submissions().filter{it.addressId in incomingAddressIds}else emptyList()
+  val preservedSubmissionIds=preservedSubmissions.map{it.id}.toSet()
+  val preservedSubmissionItems=if(preserve)dao.submissionItems().filter{it.submissionId in preservedSubmissionIds}else emptyList()
+  val ae=addresses.map{AddressEntity(it.id,it.name,it.account,it.recipient)}
+  val pe=linkedMapOf<String,MeteringPointEntity>()
+  val me=mutableListOf<MeterEntity>();val re=mutableListOf<ReadingEntity>();val ve=mutableListOf<ReadingValueEntity>();val te=mutableListOf<TariffScheduleEntity>()
+  addresses.forEach{a->a.meters.forEach{m->
+   val p=previous[m.id]
+   val inheritedPointId=m.meteringPointId?:p?.meteringPointId
+   val pointId=inheritedPointId?:m.previousMeterId?.let{previous[it]?.meteringPointId}?:m.id
+   val oldPoint=previousPoints[pointId]
+   val(di,df)=defaultDigits(m.kind)
+   val zones=MeterZones.normalize(m.tariffZones)
+   pe[pointId]=MeteringPointEntity(pointId,a.id,m.name,m.unit,m.kind,m.location.ifBlank{oldPoint?.location.orEmpty()},m.account.ifBlank{oldPoint?.account.orEmpty()},m.recipient.ifBlank{oldPoint?.recipient.orEmpty()},if((m.status?:p?.status)=="closed"&&addresses.flatMap{it.meters}.none{it.id!=m.id&&((it.meteringPointId?:previous[it.id]?.meteringPointId)==pointId)&&(it.status?:previous[it.id]?.status)!="closed"})"closed" else "active")
+   me+=MeterEntity(m.id,a.id,m.name,m.unit,m.kind,m.serial,m.integerDigits?:p?.integerDigits?:di,m.fractionDigits?:p?.fractionDigits?:df,m.previousMeterId?:p?.previousMeterId,m.installedAt?:p?.installedAt,m.verificationUntil?:p?.verificationUntil,m.status?:p?.status?:"active",m.account.ifBlank{p?.account.orEmpty()},m.recipient.ifBlank{p?.recipient.orEmpty()},zones.joinToString(","),m.location.ifBlank{p?.location.orEmpty()},pointId)
+   m.readings.forEach{r->
+    r.billingPeriod?.let{require(runCatching{YearMonth.parse(it)}.isSuccess){"Некорректный отчётный период"}}
+    re+=ReadingEntity(r.id,m.id,r.timestamp,r.photoUri,r.note,if(r.rollover)"manual_rollover" else "manual",r.billingPeriod)
+    val vals=if(r.zoneValues.isNotEmpty())r.zoneValues else mapOf("TOTAL" to (r.valueText?:decimalText(r.value)))
+    MeterZones.normalize(vals.keys).forEach{z->vals[z]?.let{ve+=ReadingValueEntity(r.id,z,it)}}
+   }
+   m.tariffSchedule.forEach{te+=TariffScheduleEntity(m.id,it.zone.uppercase(),it.validFrom,it.priceText)}
+  }}
+
+  val restoreSubmissionEntities=mutableListOf<SubmissionEntity>()
+  val restoreSubmissionItems=mutableListOf<SubmissionItemEntity>()
+  if(!preserve){
+   val addressIds=ae.map{it.id}.toSet()
+   restoredSubmissions.orEmpty().forEach{s->
+    require(s.addressId in addressIds){"Передача относится к неизвестному адресу"}
+    require(runCatching{YearMonth.parse(s.billingPeriod)}.isSuccess){"Некорректный отчётный период передачи"}
+    require(s.items.isNotEmpty()){ "Передача не содержит показаний" }
+    require(restoreSubmissionEntities.none{it.id==s.id}){"Повторяющийся идентификатор передачи"}
+    restoreSubmissionEntities+=SubmissionEntity(s.id,s.addressId,s.billingPeriod,s.submittedAt,s.recipient,s.snapshotText)
+    s.items.forEach{i->
+     require(i.meteringPointId.isNotBlank()){ "Передача содержит пустую точку учёта" }
+     require(i.meterId.isNotBlank()){ "Передача содержит пустой идентификатор прибора" }
+     require(i.valueText.isNotBlank()){ "Пустое переданное значение" }
+     require(MeterHistory.normalizeReadingText(i.valueText)==i.valueText){ "Некорректное переданное значение" }
+     restoreSubmissionItems+=SubmissionItemEntity(s.id,i.meteringPointId,i.meterId,i.zone.uppercase(),i.valueText)
+    }
+   }
+  }
+
+  db.runInTransaction{
+   dao.clearAddresses()
+   if(ae.isNotEmpty())dao.insertAddresses(ae)
+   if(pe.isNotEmpty())dao.insertMeteringPoints(pe.values.toList())
+   if(me.isNotEmpty())dao.insertMeters(me)
+   if(re.isNotEmpty())dao.insertReadings(re)
+   if(ve.isNotEmpty())dao.insertReadingValues(ve)
+   if(te.isNotEmpty())dao.insertTariffSchedule(te)
+   if(preserve){
+    if(preservedSubmissions.isNotEmpty())dao.insertSubmissions(preservedSubmissions)
+    if(preservedSubmissionItems.isNotEmpty())dao.insertSubmissionItems(preservedSubmissionItems)
+   }else{
+    if(restoreSubmissionEntities.isNotEmpty())dao.insertSubmissions(restoreSubmissionEntities)
+    if(restoreSubmissionItems.isNotEmpty())dao.insertSubmissionItems(restoreSubmissionItems)
+   }
+  }
+ }
+
+ private fun deleteOwnedPhoto(s:String){val u=runCatching{Uri.parse(s)}.getOrNull()?:return;if(u.scheme=="content"&&u.authority=="${context.packageName}.fileprovider")runCatching{context.contentResolver.delete(u,null,null)}}
+ private fun migrateLegacyJsonIfNeeded(){if(legacyPrefs.getBoolean(FLAG,false))return;if(dao.addressCount()>0){legacyPrefs.edit().putBoolean(FLAG,true).commit();return};val raw=legacyPrefs.getString("addresses",null);if(raw.isNullOrBlank()){legacyPrefs.edit().putBoolean(FLAG,true).commit();return};val legacy=parseLegacy(raw)?:return;runCatching{replaceAll(legacy,false,emptyList())}.onSuccess{legacyPrefs.edit().putBoolean(FLAG,true).commit()}}
+ private fun parseLegacy(raw:String):List<Address>?=runCatching{val root=JSONArray(raw);buildList{for(i in 0 until root.length()){val a=root.getJSONObject(i);val ma=a.optJSONArray("meters")?:JSONArray();add(Address(a.optString("id").ifBlank{UUID.randomUUID().toString()},a.optString("name","Адрес"),buildList{for(j in 0 until ma.length()){val m=ma.getJSONObject(j);val ra=m.optJSONArray("readings")?:JSONArray();val name=m.optString("name","Счётчик");add(Meter(id=m.optString("id").ifBlank{UUID.randomUUID().toString()},name=name,unit=m.optString("unit","ед."),kind=m.optString("kind").ifBlank{inferKind(name)},serial=m.optString("serial",""),readings=buildList{for(k in 0 until ra.length()){val r=ra.getJSONObject(k);val v=r.getDouble("value");val t=decimalText(v);add(Reading(r.optString("id").ifBlank{UUID.randomUUID().toString()},v,r.optLong("timestamp",System.currentTimeMillis()),r.optString("photoUri").takeIf{it.isNotBlank()},r.optString("note",""),t,false,mapOf("TOTAL" to t),null))}}))}}))}}}.getOrNull()
+ private fun inferKind(n:String)=when{n.contains("холод",true)->"cold_water";n.contains("горяч",true)->"hot_water";n.contains("элект",true)->"electricity";n.contains("газ",true)->"gas";n.contains("отоп",true)->"heating";else->"other"}
+ private fun defaultDigits(k:String)=when(k){"cold_water","hot_water","gas"->5 to 3;"electricity"->6 to 1;"heating"->6 to 3;else->6 to 2}
+ private fun decimalText(v:Double)=BigDecimal.valueOf(v).stripTrailingZeros().toPlainString()
+ private companion object{const val FLAG="room_migrated_v1"}
+}

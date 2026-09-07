@@ -47,6 +47,7 @@ class TransmissionTemplateStore(context: Context) {
     }
 
     fun defaultTemplate(address: Address): TransmissionTemplate = TransmissionTemplate(
+        id = defaultTemplateId(address.id),
         addressId = address.id,
         name = address.recipient.ifBlank { "Все показания" },
         recipient = address.recipient,
@@ -75,6 +76,10 @@ class TransmissionTemplateStore(context: Context) {
     }.getOrDefault(emptyList())
 
     private fun key(addressId: String) = "address:$addressId"
+
+    internal companion object {
+        fun defaultTemplateId(addressId: String): String = "default:$addressId"
+    }
 }
 
 data class PreparedSubmission(
@@ -165,14 +170,14 @@ object SubmissionWorkflow {
     }
 
     fun statusForTemplate(repo: MeterRepository, address: Address, template: TransmissionTemplate, period: YearMonth): TemplateSubmissionStatus =
-        statusForPointSet(repo, address, period, selectedPointIds(address, template), template.id)
+        statusForPointSet(repo, address, period, selectedPointIds(address, template), template)
 
     private fun statusForPointSet(
         repo: MeterRepository,
         address: Address,
         period: YearMonth,
         requiredPointIds: Set<String>,
-        templateId: String?
+        template: TransmissionTemplate?
     ): TemplateSubmissionStatus {
         if (requiredPointIds.isEmpty()) return TemplateSubmissionStatus(SubmissionStatus.NONE, emptySet(), emptySet())
 
@@ -184,7 +189,7 @@ object SubmissionWorkflow {
             }
             .toSet()
         val submittedKeys = repo.submissions(address.id)
-            .filter { it.billingPeriod == period.toString() && (templateId == null || submissionBelongsToTemplate(it.id, templateId)) }
+            .filter { it.billingPeriod == period.toString() && (template == null || submissionMatchesTemplate(it, template)) }
             .flatMap { it.items }
             .map { it.meteringPointId to it.zone.uppercase() }
             .toSet()
@@ -196,6 +201,15 @@ object SubmissionWorkflow {
             else -> SubmissionStatus.NONE
         }
         return TemplateSubmissionStatus(status, submittedPointIds, requiredPointIds)
+    }
+
+    internal fun submissionMatchesTemplate(submission: Submission, template: TransmissionTemplate): Boolean {
+        // Stable template identity exists only for submissions created by the hardened flow.
+        // v1.3 stored no template identifier; recipient text is not unique, so assigning a legacy
+        // row to a specific template would recreate cross-template false positives. Legacy rows
+        // still contribute to address-level status, but template-level status deliberately fails
+        // closed until that template is explicitly submitted under the new identity.
+        return submissionBelongsToTemplate(submission.id, template.id)
     }
 
     internal fun submissionBelongsToTemplate(submissionId: String, templateId: String): Boolean =

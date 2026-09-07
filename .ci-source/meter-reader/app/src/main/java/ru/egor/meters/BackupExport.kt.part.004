@@ -1,0 +1,42 @@
+            val itemKeys = mutableSetOf<Pair<String, String>>()
+            submission.items.forEach { item ->
+                require(item.meterId.isNotBlank()) { "Передача содержит пустой идентификатор счётчика" }
+                require(item.meteringPointId.isNotBlank()) { "Передача содержит пустую точку учёта" }
+                meterAddress[item.meterId]?.let { owner ->
+                    require(owner == submission.addressId) { "Передача содержит счётчик другого адреса" }
+                }
+                pointOwner[item.meteringPointId]?.let { owner ->
+                    require(owner == submission.addressId) { "Передача содержит точку учёта другого адреса" }
+                }
+                val zone = item.zone.uppercase(Locale.US)
+                require(zone in setOf("TOTAL", "T1", "T2", "T3")) { "Некорректная тарифная зона в передаче" }
+                require(MeterHistory.normalizeReadingText(item.valueText) == item.valueText) { "Некорректное показание в передаче" }
+                require(itemKeys.add(item.meteringPointId to zone)) { "Повторяющаяся зона в передаче" }
+            }
+        }
+    }
+
+    private fun isSafeEntryName(name: String): Boolean =
+        name.isNotBlank() && !name.startsWith('/') && '\\' !in name && name.split('/').none { it == ".." || it.isBlank() }
+
+    private fun isSQLiteDatabase(bytes: ByteArray): Boolean =
+        bytes.size >= 100 && bytes.copyOfRange(0, 16).contentEquals("SQLite format 3\u0000".toByteArray(StandardCharsets.US_ASCII))
+
+    private fun sqliteHeaderStub(): ByteArray = ByteArray(100).also { target ->
+        "SQLite format 3\u0000".toByteArray(StandardCharsets.US_ASCII).copyInto(target)
+    }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes).joinToString("") { "%02x".format(Locale.US, it) }
+
+    private fun csvCell(v: String) = "\"${v.replace("\"", "\"\"")}\""
+    private fun isoDate(ts: Long) = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getDefault() }.format(Date(ts))
+    private fun java.io.InputStream.readBytesLimited(max: Int): ByteArray {
+        val out = ByteArrayOutputStream(); val buf = ByteArray(8192); var total = 0
+        while (true) { val n = read(buf); if (n < 0) break; total += n; require(total <= max) { "Слишком большой файл в архиве" }; out.write(buf, 0, n) }
+        return out.toByteArray()
+    }
+    private fun JSONObject.optNullableString(key: String) = if (!has(key) || isNull(key)) null else optString(key).takeIf { it.isNotBlank() }
+    private fun JSONObject.optIntOrNull(key: String) = if (!has(key) || isNull(key)) null else getInt(key)
+    private fun JSONObject.optLongOrNull(key: String) = if (!has(key) || isNull(key)) null else getLong(key)
+}

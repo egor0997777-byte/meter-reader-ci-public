@@ -1,6 +1,7 @@
 package ru.egor.meters
 
 import android.content.Context
+import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -14,7 +15,9 @@ data class BackupMetadata(
     val submissionTemplates: Map<String, String> = emptyMap(),
     val notificationsEnabled: Boolean = true,
     val reminderWindows: Map<String, ReminderWindowBackup> = emptyMap(),
-    val lastVerificationByMeter: Map<String, Long> = emptyMap()
+    val lastVerificationByMeter: Map<String, Long> = emptyMap(),
+    /** False only for older backups that genuinely had no metadata section. */
+    val included: Boolean = false
 )
 
 object BackupMetadataStore {
@@ -46,7 +49,8 @@ object BackupMetadataStore {
             submissionTemplates = templateValues,
             notificationsEnabled = reminders.getBoolean("notifications_enabled", true),
             reminderWindows = windows,
-            lastVerificationByMeter = verification
+            lastVerificationByMeter = verification,
+            included = true
         )
     }
 
@@ -94,35 +98,74 @@ object BackupMetadataStore {
 
     fun apply(context: Context, metadata: BackupMetadata, addresses: List<Address>) {
         validate(metadata, addresses)
+
+        // v1-v3 and early development v4 archives had no transferable settings metadata. Restoring
+        // one of those archives must not silently clear settings that already exist on this device.
+        if (!metadata.included) {
+            context.getSharedPreferences("v13_walkthrough", Context.MODE_PRIVATE).edit().clear().commit()
+            return
+        }
+
         val templatePrefs = context.getSharedPreferences(TEMPLATE_PREFS, Context.MODE_PRIVATE)
         val reminderPrefs = context.getSharedPreferences(REMINDER_PREFS, Context.MODE_PRIVATE)
+        val previousTemplates = templatePrefs.all.toMap()
+        val previousReminders = reminderPrefs.all.toMap()
 
-        val templateEditor = templatePrefs.edit().clear()
-        metadata.submissionTemplates.forEach { (addressId, raw) ->
-            templateEditor.putString("address:$addressId", raw)
-        }
-        check(templateEditor.commit()) { "Не удалось восстановить шаблоны передачи" }
+        try {
+            val templateEditor = templatePrefs.edit().clear()
+            metadata.submissionTemplates.forEach { (addressId, raw) ->
+                templateEditor.putString("address:$addressId", raw)
+            }
+            check(templateEditor.commit()) { "Не удалось восстановить шаблоны передачи" }
 
-        val reminderEditor = reminderPrefs.edit().clear()
-            .putBoolean("notifications_enabled", metadata.notificationsEnabled)
-        metadata.reminderWindows.forEach { (addressId, window) ->
-            reminderEditor
-                .putBoolean("address:$addressId:enabled", window.enabled)
-                .putInt("address:$addressId:start_day", window.startDay)
-                .putInt("address:$addressId:end_day", window.endDay)
+            val reminderEditor = reminderPrefs.edit().clear()
+                .putBoolean("notifications_enabled", metadata.notificationsEnabled)
+            metadata.reminderWindows.forEach { (addressId, window) ->
+                reminderEditor
+                    .putBoolean("address:$addressId:enabled", window.enabled)
+                    .putInt("address:$addressId:start_day", window.startDay)
+                    .putInt("address:$addressId:end_day", window.endDay)
+            }
+            metadata.lastVerificationByMeter.forEach { (meterId, millis) ->
+                reminderEditor.putLong("meter:$meterId:last_verification", millis)
+            }
+            check(reminderEditor.commit()) { "Не удалось восстановить настройки напоминаний" }
+        } catch (failure: Throwable) {
+            // The two preference files form one transferable metadata unit. If either synchronous
+            // commit fails, restore both previous snapshots instead of leaving half-applied backup
+            // settings. The Room restore has its own transaction boundary; this protects the
+            // ancillary metadata boundary from partial writes.
+            restorePreferences(templatePrefs, previousTemplates)
+            restorePreferences(reminderPrefs, previousReminders)
+            throw failure
         }
-        metadata.lastVerificationByMeter.forEach { (meterId, millis) ->
-            reminderEditor.putLong("meter:$meterId:last_verification", millis)
-        }
-        check(reminderEditor.commit()) { "Не удалось восстановить настройки напоминаний" }
 
         // Security credentials/settings and an in-progress walkthrough are intentionally device/session specific.
         // They are not transferred to another phone. A successful restore starts with no stale walkthrough session.
         context.getSharedPreferences("v13_walkthrough", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
+    private fun restorePreferences(preferences: SharedPreferences, snapshot: Map<String, *>) {
+        val editor = preferences.edit().clear()
+        snapshot.forEach { (key, value) ->
+            when (value) {
+                is String -> editor.putString(key, value)
+                is Int -> editor.putInt(key, value)
+                is Long -> editor.putLong(key, value)
+                is Float -> editor.putFloat(key, value)
+                is Boolean -> editor.putBoolean(key, value)
+                is Set<*> -> {
+                    @Suppress("UNCHECKED_CAST")
+                    editor.putStringSet(key, (value as Set<String>).toSet())
+                }
+            }
+        }
+        check(editor.commit()) { "Не удалось откатить настройки после ошибки восстановления" }
+    }
+
     fun toJson(metadata: BackupMetadata): JSONObject = JSONObject().apply {
         put("version", METADATA_VERSION)
+        put("included", metadata.included)
         put("notificationsEnabled", metadata.notificationsEnabled)
         put("submissionTemplates", JSONObject().apply {
             metadata.submissionTemplates.toSortedMap().forEach { (addressId, raw) -> put(addressId, raw) }
@@ -143,7 +186,7 @@ object BackupMetadataStore {
     }
 
     fun fromJson(source: JSONObject?): BackupMetadata {
-        if (source == null) return BackupMetadata()
+        if (source == null) return BackupMetadata(included = false)
         require(source.optInt("version", 0) == METADATA_VERSION) { "Версия metadata резервной копии не поддерживается" }
 
         val templatesObject = source.optJSONObject("submissionTemplates") ?: JSONObject()
@@ -167,7 +210,9 @@ object BackupMetadataStore {
             submissionTemplates = templates,
             notificationsEnabled = source.optBoolean("notificationsEnabled", true),
             reminderWindows = windows,
-            lastVerificationByMeter = verification
+            lastVerificationByMeter = verification,
+            // Metadata objects produced before this marker was introduced were already real metadata.
+            included = source.optBoolean("included", true)
         )
     }
 }

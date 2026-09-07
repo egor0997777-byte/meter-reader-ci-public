@@ -1,5 +1,6 @@
 package ru.egor.meters
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -12,18 +13,37 @@ class BackupMetadataTest {
             submissionTemplates = mapOf("a1" to "[{\"id\":\"t1\"}]"),
             notificationsEnabled = false,
             reminderWindows = mapOf("a1" to ReminderWindowBackup(enabled = true, startDay = 19, endDay = 24)),
-            lastVerificationByMeter = mapOf("m1" to 123456789L)
+            lastVerificationByMeter = mapOf("m1" to 123456789L),
+            included = true
         )
 
         val restored = BackupMetadataStore.fromJson(BackupMetadataStore.toJson(source))
 
         assertEquals(source, restored)
         assertFalse(restored.notificationsEnabled)
+        assertTrue(restored.included)
     }
 
     @Test
-    fun emptyMetadataIsBackwardCompatible() {
-        assertEquals(BackupMetadata(), BackupMetadataStore.fromJson(null))
+    fun absentMetadataIsBackwardCompatibleAndMarkedNotIncluded() {
+        val restored = BackupMetadataStore.fromJson(null)
+        assertEquals(BackupMetadata(), restored)
+        assertFalse(restored.included)
+    }
+
+    @Test
+    fun metadataWrittenBeforePresenceMarkerIsStillRecognizedAsRealMetadata() {
+        val oldV4Metadata = JSONObject()
+            .put("version", 1)
+            .put("notificationsEnabled", false)
+            .put("submissionTemplates", JSONObject())
+            .put("reminderWindows", org.json.JSONArray())
+            .put("lastVerification", JSONObject())
+
+        val restored = BackupMetadataStore.fromJson(oldV4Metadata)
+
+        assertTrue(restored.included)
+        assertFalse(restored.notificationsEnabled)
     }
 
     @Test
@@ -38,7 +58,8 @@ class BackupMetadataTest {
                 "a1" to """[{"id":"t1","addressId":"a1","name":"УК","recipient":"УК","account":"123","prefix":"","suffix":"","points":["p1"]}]"""
             ),
             reminderWindows = mapOf("a1" to ReminderWindowBackup(true, 20, 25)),
-            lastVerificationByMeter = mapOf("m1" to 1L)
+            lastVerificationByMeter = mapOf("m1" to 1L),
+            included = true
         )
 
         BackupMetadataStore.validate(metadata, listOf(address))
@@ -55,7 +76,8 @@ class BackupMetadataTest {
         val metadata = BackupMetadata(
             submissionTemplates = mapOf(
                 "a1" to """[{"id":"t1","addressId":"a1","name":"УК","points":["foreign-point"]}]"""
-            )
+            ),
+            included = true
         )
 
         BackupMetadataStore.validate(metadata, listOf(address))
@@ -67,7 +89,8 @@ class BackupMetadataTest {
         val metadata = BackupMetadata(
             submissionTemplates = mapOf(
                 "a1" to """[{"id":"t1","addressId":"a1","name":"УК","points":[]},{"id":"t1","addressId":"a1","name":"ТСЖ","points":[]}]"""
-            )
+            ),
+            included = true
         )
 
         BackupMetadataStore.validate(metadata, listOf(address))

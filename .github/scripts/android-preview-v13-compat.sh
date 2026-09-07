@@ -26,6 +26,8 @@ replacements = {
     'tap_text "Безопасность и конфиденциальность"; wait_text "Где находятся данные"; wait_text "Интернет-разрешение не запрашивается"': 'tap_text "Безопасность и конфиденциальность"; wait_text "Версия 1.0"; tap_text "Безопасность и конфиденциальность"; wait_text "Где находятся данные"; wait_text "Интернет-разрешение не запрашивается"',
     'tap_text "‹  Главная"; wait_text "Учёт показаний"': 'tap_text "‹  Главная"; wait_text "Учёт показаний"; adb shell input keyevent KEYCODE_BACK >/dev/null; wait_text "Учёт и история"',
     'tap_text "Учёт показаний"': 'tap_text "Учёт и история"',
+    'tap_text "Сохранить"; wait_text "T1 100"': 'hide_ime; tap_text "Сохранить"; wait_text "T1 100"',
+    'tap_text "Сохранить"; wait_text "Расход с прошлого раза"': 'hide_ime; tap_text "Сохранить"; wait_text "Расход с прошлого раза"',
 }
 for old, new in replacements.items():
     if old not in src:

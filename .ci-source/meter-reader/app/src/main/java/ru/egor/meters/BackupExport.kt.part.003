@@ -1,0 +1,180 @@
+            snapshotDb.openHelper.writableDatabase.query("PRAGMA foreign_key_check").use { cursor ->
+                require(!cursor.moveToFirst()) { "В снимке Room DB нарушены связи данных" }
+            }
+            snapshotDb.openHelper.writableDatabase.query("PRAGMA integrity_check").use { cursor ->
+                require(cursor.moveToFirst() && cursor.getString(0) == "ok") { "Снимок Room DB не прошёл integrity_check" }
+            }
+
+            val expectedAddressIds = payload.addresses.map { it.id }.toSet()
+            val expectedMeters = payload.addresses.flatMap { it.meters }
+            val expectedMeterIds = expectedMeters.map { it.id }.toSet()
+            val expectedPointIds = expectedMeters.map { it.meteringPointId ?: it.id }.toSet()
+            val expectedReadings = expectedMeters.flatMap { it.readings }
+            val expectedReadingIds = expectedReadings.map { it.id }.toSet()
+            val expectedSubmissionIds = payload.submissions.map { it.id }.toSet()
+
+            require(dao.addresses().map { it.id }.toSet() == expectedAddressIds) { "Снимок Room DB не совпадает с адресами резервной копии" }
+            require(dao.meters().map { it.id }.toSet() == expectedMeterIds) { "Снимок Room DB не совпадает со счётчиками резервной копии" }
+            require(dao.meteringPoints().map { it.id }.toSet() == expectedPointIds) { "Снимок Room DB не совпадает с точками учёта" }
+            require(dao.readings().map { it.id }.toSet() == expectedReadingIds) { "Снимок Room DB не совпадает с показаниями резервной копии" }
+            require(dao.submissions().map { it.id }.toSet() == expectedSubmissionIds) { "Снимок Room DB не совпадает с передачами резервной копии" }
+
+            val expectedValues = expectedMeters.flatMap { meter ->
+                meter.readings.flatMap { reading -> readingZoneValues(meter, reading).map { (zone, value) -> Triple(reading.id, zone, value) } }
+            }.toSet()
+            val actualValues = dao.readingValues().map { Triple(it.readingId, it.zone, it.valueText) }.toSet()
+            require(actualValues == expectedValues) { "Снимок Room DB содержит другие значения показаний" }
+
+            val expectedItems = payload.submissions.flatMap { submission ->
+                submission.items.map { item -> listOf(submission.id, item.meteringPointId, item.meterId, item.zone.uppercase(Locale.US), item.valueText).joinToString("\u0000") }
+            }.toSet()
+            val actualItems = dao.submissionItems().map { item ->
+                listOf(item.submissionId, item.meteringPointId, item.meterId, item.zone.uppercase(Locale.US), item.valueText).joinToString("\u0000")
+            }.toSet()
+            require(actualItems == expectedItems) { "Снимок Room DB содержит другие переданные значения" }
+        } finally {
+            runCatching { snapshotDb?.close() }
+            context.deleteDatabase(name)
+        }
+    }
+
+    private fun toJson(addresses: List<Address>, submissions: List<Submission>, metadata: BackupMetadata): JSONObject = JSONObject().apply {
+        put("format", FORMAT)
+        put("version", VERSION)
+        put("metadata", BackupMetadataStore.toJson(metadata))
+        put("addresses", JSONArray().apply { addresses.forEach { a -> put(JSONObject().apply {
+            put("id", a.id); put("name", a.name); put("account", a.account); put("recipient", a.recipient)
+            put("meters", JSONArray().apply { a.meters.forEach { m -> put(JSONObject().apply {
+                put("id", m.id); put("name", m.name); put("unit", m.unit); put("kind", m.kind); put("serial", m.serial); put("location", m.location)
+                put("integerDigits", m.integerDigits); put("fractionDigits", m.fractionDigits); put("previousMeterId", m.previousMeterId); put("meteringPointId", m.meteringPointId)
+                put("installedAt", m.installedAt); put("verificationUntil", m.verificationUntil); put("status", m.status); put("account", m.account); put("recipient", m.recipient)
+                put("tariffZones", JSONArray().apply { MeterZones.normalize(m.tariffZones).forEach(::put) })
+                put("tariffSchedule", JSONArray().apply { m.tariffSchedule.sortedBy { it.validFrom }.forEach { t -> put(JSONObject().apply { put("zone", t.zone); put("validFrom", t.validFrom); put("priceText", t.priceText) }) } })
+                put("readings", JSONArray().apply { m.readings.forEach { r -> put(JSONObject().apply {
+                    put("id", r.id); put("valueText", MeterHistory.readingText(r)); put("timestamp", r.timestamp); put("note", r.note); put("rollover", r.rollover); put("hasPhoto", r.photoUri != null); put("billingPeriod", r.billingPeriod)
+                    put("zoneValues", JSONObject().apply { readingZoneValues(m, r).forEach { (zone, value) -> put(zone, value) } })
+                }) } })
+            }) } })
+        }) } })
+        put("submissions", JSONArray().apply { submissions.forEach { s -> put(JSONObject().apply {
+            put("id", s.id); put("addressId", s.addressId); put("billingPeriod", s.billingPeriod); put("submittedAt", s.submittedAt); put("recipient", s.recipient); put("snapshotText", s.snapshotText)
+            put("items", JSONArray().apply { s.items.forEach { item -> put(JSONObject().apply {
+                put("meteringPointId", item.meteringPointId); put("meterId", item.meterId); put("zone", item.zone); put("valueText", item.valueText)
+            }) } })
+        }) } })
+    }
+
+    private fun fromJson(root: JSONObject, version: Int): List<Address> {
+        val aa = root.getJSONArray("addresses")
+        val parsed = List(aa.length()) { i ->
+            val a = aa.getJSONObject(i)
+            val ma = a.optJSONArray("meters") ?: JSONArray()
+            Address(
+                id = a.getString("id"),
+                name = a.getString("name"),
+                account = a.optString("account"),
+                recipient = a.optString("recipient"),
+                meters = List(ma.length()) { j ->
+                    val m = ma.getJSONObject(j)
+                    val ra = m.optJSONArray("readings") ?: JSONArray()
+                    val zones = if (version >= 2) m.optJSONArray("tariffZones")?.let { arr -> List(arr.length()) { idx -> arr.getString(idx) } } ?: MeterZones.SINGLE else MeterZones.SINGLE
+                    val schedule = if (version >= 2) m.optJSONArray("tariffSchedule")?.let { arr -> List(arr.length()) { idx ->
+                        val t = arr.getJSONObject(idx); TariffScheduleEntry(t.getString("zone"), t.getLong("validFrom"), t.getString("priceText"))
+                    } } ?: emptyList() else emptyList()
+                    Meter(
+                        id = m.getString("id"), name = m.getString("name"), unit = m.getString("unit"), kind = m.optString("kind", "other"), serial = m.optString("serial"),
+                        integerDigits = m.optIntOrNull("integerDigits"), fractionDigits = m.optIntOrNull("fractionDigits"), previousMeterId = m.optNullableString("previousMeterId"),
+                        installedAt = m.optLongOrNull("installedAt"), verificationUntil = m.optLongOrNull("verificationUntil"), status = m.optNullableString("status"), account = m.optString("account"), recipient = m.optString("recipient"),
+                        tariffZones = MeterZones.normalize(zones), tariffSchedule = schedule, location = if (version >= 3) m.optString("location") else "", meteringPointId = if (version >= 4) m.optNullableString("meteringPointId") else null,
+                        readings = List(ra.length()) { k ->
+                            val r = ra.getJSONObject(k)
+                            val zoneValues = if (version >= 2 && r.has("zoneValues")) {
+                                val obj = r.getJSONObject("zoneValues")
+                                linkedMapOf<String, String>().apply {
+                                    obj.keys().forEach { zone ->
+                                        val raw = obj.getString(zone)
+                                        require(MeterHistory.normalizeReadingText(raw) == raw) { "Некорректное показание" }
+                                        put(zone.uppercase(Locale.US), raw)
+                                    }
+                                }
+                            } else {
+                                val raw = r.getString("valueText")
+                                require(MeterHistory.normalizeReadingText(raw) == raw) { "Некорректное показание" }
+                                linkedMapOf("TOTAL" to raw)
+                            }
+                            require(zoneValues.isNotEmpty()) { "Показание не содержит тарифных зон" }
+                            val primary = zoneValues["TOTAL"] ?: zoneValues["T1"] ?: zoneValues.values.first()
+                            val period = if (version >= 4) r.optNullableString("billingPeriod") else null
+                            Reading(
+                                id = r.getString("id"), value = primary.toDouble(), valueText = primary, timestamp = r.getLong("timestamp"), note = r.optString("note"), rollover = r.optBoolean("rollover"),
+                                photoUri = if (r.optBoolean("hasPhoto")) "backup://${r.getString("id")}" else null, zoneValues = zoneValues, billingPeriod = period
+                            )
+                        }
+                    )
+                }
+            )
+        }
+        if (version >= 4) return parsed
+        return parsed.map { address ->
+            val byId = address.meters.associateBy { it.id }
+            fun rootOf(meter: Meter): String {
+                var current = meter
+                val seen = mutableSetOf<String>()
+                while (true) {
+                    require(seen.add(current.id)) { "Циклическая цепочка замены в старой резервной копии" }
+                    val previousId = current.previousMeterId ?: return current.id
+                    current = byId[previousId]
+                        ?: error("Старая резервная копия содержит неполную или межадресную цепочку замены")
+                }
+            }
+            address.copy(meters = address.meters.map { meter -> meter.copy(meteringPointId = rootOf(meter)) })
+        }
+    }
+
+    private fun submissionsFromJson(root: JSONObject): List<Submission> {
+        val source = root.optJSONArray("submissions") ?: JSONArray()
+        return List(source.length()) { i ->
+            val s = source.getJSONObject(i)
+            val items = s.optJSONArray("items") ?: JSONArray()
+            Submission(
+                id = s.getString("id"), addressId = s.getString("addressId"), billingPeriod = s.getString("billingPeriod"), submittedAt = s.getLong("submittedAt"), recipient = s.optString("recipient"), snapshotText = s.optString("snapshotText"),
+                items = List(items.length()) { j ->
+                    val item = items.getJSONObject(j)
+                    SubmissionItem(item.getString("meteringPointId"), item.getString("meterId"), item.optString("zone", "TOTAL").uppercase(Locale.US), item.getString("valueText"))
+                }
+            )
+        }
+    }
+
+    private fun validate(addresses: List<Address>, submissions: List<Submission> = emptyList()) {
+        val addressIds = addresses.map { it.id }
+        require(addressIds.size == addressIds.toSet().size) { "Повторяющиеся ID адресов" }
+        val meters = addresses.flatMap { it.meters }
+        val meterIds = meters.map { it.id }
+        require(meterIds.size == meterIds.toSet().size) { "Повторяющиеся ID счётчиков" }
+        val readings = meters.flatMap { it.readings }
+        val readingIds = readings.map { it.id }
+        require(readingIds.size == readingIds.toSet().size) { "Повторяющиеся ID показаний" }
+        require(addresses.all { it.name.isNotBlank() } && meters.all { it.name.isNotBlank() && it.unit.isNotBlank() }) { "Не заполнены обязательные поля" }
+        require(meters.all { it.previousMeterId == null || it.previousMeterId in meterIds }) { "Нарушена цепочка замены счётчиков" }
+        require(meters.all { m -> m.readings.all { r -> readingZoneValues(m, r).isNotEmpty() } }) { "Пустое многотарифное показание" }
+        readings.mapNotNull { it.billingPeriod }.forEach { require(runCatching { YearMonth.parse(it) }.isSuccess) { "Некорректный отчётный период" } }
+
+        val meterAddress = addresses.flatMap { a -> a.meters.map { it.id to a.id } }.toMap()
+        meters.forEach { meter ->
+            meter.previousMeterId?.let { previousId ->
+                require(meterAddress[previousId] == meterAddress[meter.id]) { "Цепочка замены пересекает адреса" }
+            }
+        }
+        val pointOwner = mutableMapOf<String, String>()
+        addresses.forEach { address -> address.meters.forEach { meter ->
+            val pointId = meter.meteringPointId ?: meter.id
+            val oldOwner = pointOwner.putIfAbsent(pointId, address.id)
+            require(oldOwner == null || oldOwner == address.id) { "Точка учёта используется в разных адресах" }
+        } }
+        val submissionIds = submissions.map { it.id }
+        require(submissionIds.size == submissionIds.toSet().size) { "Повторяющиеся ID передач" }
+        submissions.forEach { submission ->
+            require(submission.addressId in addressIds) { "Передача ссылается на неизвестный адрес" }
+            require(runCatching { YearMonth.parse(submission.billingPeriod) }.isSuccess) { "Некорректный отчётный период передачи" }
+            require(submission.items.isNotEmpty()) { "Передача не содержит показаний" }

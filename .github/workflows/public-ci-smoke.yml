@@ -1,0 +1,16 @@
+name: Public CI Smoke
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify public runner
+        run: |
+          echo "public-ci-ok"
+          test -f README.md

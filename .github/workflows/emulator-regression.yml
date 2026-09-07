@@ -9,6 +9,7 @@ on:
       - '.github/scripts/android-preview.sh'
       - '.github/scripts/android-preview-v13-compat.sh'
       - '.github/scripts/android-v11-flow.sh'
+      - '.github/scripts/android-v11-v14-compat.sh'
       - '.github/scripts/android-v12-db-check.sh'
       - '.github/scripts/android-v14-backup-restore.sh'
       - '.github/workflows/emulator-regression.yml'
@@ -88,7 +89,7 @@ jobs:
           disable-animations: true
           script: |
             bash "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-flow.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-v14-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore.sh"
 

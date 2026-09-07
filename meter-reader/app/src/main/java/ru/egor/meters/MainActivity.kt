@@ -8,36 +8,36 @@ import java.time.YearMonth
 import java.util.UUID
 
 data class Reading(
-    val id:String=UUID.randomUUID().toString(),
-    val value:Double,
-    val timestamp:Long=System.currentTimeMillis(),
-    val photoUri:String?=null,
-    val note:String="",
-    val valueText:String?=null,
-    val rollover:Boolean=false,
-    val zoneValues:Map<String,String> = valueText?.let{mapOf("TOTAL" to it)}?:emptyMap(),
-    val billingPeriod:String?=null
+ val id:String=UUID.randomUUID().toString(),
+ val value:Double,
+ val timestamp:Long=System.currentTimeMillis(),
+ val photoUri:String?=null,
+ val note:String="",
+ val valueText:String?=null,
+ val rollover:Boolean=false,
+ val zoneValues:Map<String,String> = valueText?.let{mapOf("TOTAL" to it)}?:emptyMap(),
+ val billingPeriod:String?=null
 )
 
 data class Meter(
-    val id:String=UUID.randomUUID().toString(),
-    val name:String,
-    val unit:String,
-    val kind:String="other",
-    val serial:String="",
-    val readings:List<Reading> = emptyList(),
-    val integerDigits:Int?=null,
-    val fractionDigits:Int?=null,
-    val previousMeterId:String?=null,
-    val installedAt:Long?=null,
-    val verificationUntil:Long?=null,
-    val status:String?=null,
-    val account:String="",
-    val recipient:String="",
-    val tariffZones:List<String> = MeterZones.SINGLE,
-    val tariffSchedule:List<TariffScheduleEntry> = emptyList(),
-    val location:String="",
-    val meteringPointId:String?=null
+ val id:String=UUID.randomUUID().toString(),
+ val name:String,
+ val unit:String,
+ val kind:String="other",
+ val serial:String="",
+ val readings:List<Reading> = emptyList(),
+ val integerDigits:Int?=null,
+ val fractionDigits:Int?=null,
+ val previousMeterId:String?=null,
+ val installedAt:Long?=null,
+ val verificationUntil:Long?=null,
+ val status:String?=null,
+ val account:String="",
+ val recipient:String="",
+ val tariffZones:List<String> = MeterZones.SINGLE,
+ val tariffSchedule:List<TariffScheduleEntry> = emptyList(),
+ val location:String="",
+ val meteringPointId:String?=null
 )
 
 data class Address(val id:String=UUID.randomUUID().toString(),val name:String,val meters:List<Meter> = emptyList(),val account:String="",val recipient:String="")
@@ -120,7 +120,18 @@ class MeterRepository(
   lastLoadedSnapshot=fresh
  }
 
- fun restoreValidated(addresses:List<Address>,submissions:List<Submission> = emptyList()){
+ /**
+  * Validates and replaces the logical Room dataset. When [cleanupRemovedPhotos] is false, files
+  * removed by the replacement are deliberately retained and returned to the caller. This lets a
+  * higher-level restore transaction commit ancillary metadata first and only then delete old
+  * photos. A failed metadata step can therefore roll the Room dataset back without discovering
+  * that its previously referenced photo files were already destroyed.
+  */
+ fun restoreValidated(
+  addresses:List<Address>,
+  submissions:List<Submission> = emptyList(),
+  cleanupRemovedPhotos:Boolean = true
+ ):Set<String>{
   val validationName="restore-validation-${UUID.randomUUID()}.db"
   val validationDb=MeterDatabase.openTemporary(context,validationName)
   try{
@@ -138,112 +149,22 @@ class MeterRepository(
   }
   val old=dao.readings().mapNotNull{it.photoUri}.toSet()
   val restoredPhotos=addresses.flatMap{it.meters}.flatMap{it.readings}.mapNotNull{it.photoUri}.toSet()
-  // From this point replaceAll is the commit point. Do not let post-commit refresh/cleanup turn
-  // a successful DB replacement into a reported failure, because the caller would then delete
-  // prepared photos that the committed DB already references.
+  val removedPhotos=old-restoredPhotos
+  // replaceAll is the Room commit point. Photo cleanup can be deferred until metadata has also
+  // committed; callers performing a full restore must not destroy rollback data prematurely.
   replaceAll(addresses,false,submissions)
   lastLoadedSnapshot=runCatching{loadCurrent()}.getOrDefault(addresses)
-  (old-restoredPhotos).forEach(::deleteOwnedPhoto)
+  if(cleanupRemovedPhotos) cleanupRemovedPhotos(removedPhotos)
+  return removedPhotos
  }
 
- private fun mergeUserChanges(base:List<Address>,updated:List<Address>,current:List<Address>):List<Address>{
-  val baseById=base.associateBy{it.id};val updatedById=updated.associateBy{it.id}
-  val removedIds=baseById.keys-updatedById.keys
-  val result=current.filterNot{it.id in removedIds}.toMutableList()
-  updated.forEach{u->
-   val b=baseById[u.id]
-   if(b==null){
-    if(result.none{it.id==u.id})result+=u
-   }else{
-    val index=result.indexOfFirst{it.id==u.id}
-    if(index>=0)result[index]=mergeAddress(b,u,result[index])
-   }
-  }
-  return result
+ fun cleanupRemovedPhotos(candidates:Collection<String>){
+  val live=dao.readings().mapNotNull{it.photoUri}.toSet()
+  candidates.asSequence().filterNot{it in live}.forEach(::deleteOwnedPhoto)
  }
 
- private fun mergeAddress(base:Address,updated:Address,current:Address):Address{
-  val baseMeters=base.meters.associateBy{it.id};val updatedMeters=updated.meters.associateBy{it.id}
-  val removedIds=baseMeters.keys-updatedMeters.keys
-  val meters=current.meters.filterNot{it.id in removedIds}.toMutableList()
-  updated.meters.forEach{u->
-   val b=baseMeters[u.id]
-   if(b==null){
-    if(meters.none{it.id==u.id})meters+=u
-   }else{
-    val index=meters.indexOfFirst{it.id==u.id}
-    if(index>=0)meters[index]=mergeMeter(b,u,meters[index])
-   }
-  }
-  return current.copy(
-   name=pick(base.name,updated.name,current.name),
-   meters=meters,
-   account=pick(base.account,updated.account,current.account),
-   recipient=pick(base.recipient,updated.recipient,current.recipient)
-  )
- }
-
- private fun mergeMeter(base:Meter,updated:Meter,current:Meter):Meter{
-  val baseReadings=base.readings.associateBy{it.id};val updatedReadings=updated.readings.associateBy{it.id}
-  val removedIds=baseReadings.keys-updatedReadings.keys
-  val readings=current.readings.filterNot{it.id in removedIds}.toMutableList()
-  updated.readings.forEach{u->
-   val b=baseReadings[u.id]
-   if(b==null){
-    if(readings.none{it.id==u.id})readings+=u
-   }else if(u!=b){
-    val index=readings.indexOfFirst{it.id==u.id}
-    if(index>=0)readings[index]=mergeReading(b,u,readings[index])
-   }
-  }
-  return current.copy(
-   name=pick(base.name,updated.name,current.name),
-   unit=pick(base.unit,updated.unit,current.unit),
-   kind=pick(base.kind,updated.kind,current.kind),
-   serial=pick(base.serial,updated.serial,current.serial),
-   readings=readings,
-   integerDigits=pick(base.integerDigits,updated.integerDigits,current.integerDigits),
-   fractionDigits=pick(base.fractionDigits,updated.fractionDigits,current.fractionDigits),
-   previousMeterId=pick(base.previousMeterId,updated.previousMeterId,current.previousMeterId),
-   installedAt=pick(base.installedAt,updated.installedAt,current.installedAt),
-   verificationUntil=pick(base.verificationUntil,updated.verificationUntil,current.verificationUntil),
-   status=pick(base.status,updated.status,current.status),
-   account=pick(base.account,updated.account,current.account),
-   recipient=pick(base.recipient,updated.recipient,current.recipient),
-   tariffZones=pick(base.tariffZones,updated.tariffZones,current.tariffZones),
-   tariffSchedule=pick(base.tariffSchedule,updated.tariffSchedule,current.tariffSchedule),
-   location=pick(base.location,updated.location,current.location),
-   meteringPointId=pick(base.meteringPointId,updated.meteringPointId,current.meteringPointId)
-  )
- }
-
- private fun mergeReading(base:Reading,updated:Reading,current:Reading):Reading{
-  val explicitZones=updated.zoneValues!=base.zoneValues
-  val legacySingleValueChanged=updated.valueText!=base.valueText &&
-   (base.zoneValues.isEmpty() || base.zoneValues.keys==setOf("TOTAL"))
-  val mergedZones=when{
-   explicitZones->updated.zoneValues
-   legacySingleValueChanged&&!updated.valueText.isNullOrBlank()->mapOf("TOTAL" to updated.valueText.orEmpty())
-   else->current.zoneValues
-  }
-  val mergedPrimary=mergedZones["TOTAL"]?:mergedZones["T1"]?:current.valueText?:updated.valueText
-  val mergedPeriod=when{
-   updated.billingPeriod!=null&&updated.billingPeriod!=base.billingPeriod->updated.billingPeriod
-   else->current.billingPeriod
-  }
-  return current.copy(
-   value=mergedPrimary?.toDoubleOrNull()?:pick(base.value,updated.value,current.value),
-   timestamp=pick(base.timestamp,updated.timestamp,current.timestamp),
-   photoUri=pick(base.photoUri,updated.photoUri,current.photoUri),
-   note=pick(base.note,updated.note,current.note),
-   valueText=mergedPrimary,
-   rollover=pick(base.rollover,updated.rollover,current.rollover),
-   zoneValues=mergedZones,
-   billingPeriod=mergedPeriod
-  )
- }
-
- private fun <T> pick(base:T,updated:T,current:T):T=if(updated!=base)updated else current
+ private fun mergeUserChanges(base:List<Address>,updated:List<Address>,current:List<Address>):List<Address> =
+  DatasetMerge.merge(base,updated,current)
 
  private fun replaceAll(addresses:List<Address>,preserve:Boolean,restoredSubmissions:List<Submission>?){
   val previous=if(preserve)dao.meters().associateBy{it.id}else emptyMap()

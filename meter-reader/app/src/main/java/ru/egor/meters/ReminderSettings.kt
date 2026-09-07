@@ -1,6 +1,7 @@
 package ru.egor.meters
 
 import android.content.Context
+import java.time.YearMonth
 
 data class AddressReminderSettings(
     val enabled: Boolean = true,
@@ -9,7 +10,8 @@ data class AddressReminderSettings(
 )
 
 class ReminderSettingsStore(context: Context) {
-    private val prefs = context.getSharedPreferences("meter_reminders", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("meter_reminders", Context.MODE_PRIVATE)
 
     fun notificationsEnabled(): Boolean = prefs.getBoolean("notifications_enabled", true)
 
@@ -30,6 +32,12 @@ class ReminderSettingsStore(context: Context) {
             .putInt(key(addressId, "end_day"), settings.endDay.coerceIn(1, 31))
             .remove(key(addressId, "last_transferred_month"))
             .apply()
+    }
+
+    fun isTransferred(addressId: String, month: YearMonth): Boolean {
+        val repo = MeterRepository(appContext)
+        val address = repo.load().firstOrNull { it.id == addressId } ?: return false
+        return SubmissionWorkflow.statusForAddress(repo, address, month) == SubmissionStatus.COMPLETE
     }
 
     fun getLastVerification(meterId: String): Long? =

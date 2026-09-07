@@ -154,6 +154,14 @@ adb shell pm clear "$PACKAGE_NAME" >/dev/null
 open_data_tools
 shot "19-v14-clean-install-data-tools.png"
 tap_text "Восстановить из копии"
+# DocumentsUI may open on an empty Recent view even though the file is present in Download.
+# Navigate explicitly to Downloads instead of treating Recent indexing as an app failure.
+if ! has_text "moi-schetschiki-backup.zip"; then
+  wait_text "Show roots" 20
+  tap_text "Show roots"
+  wait_text "Downloads" 20
+  tap_text "Downloads"
+fi
 wait_text "moi-schetschiki-backup.zip" 40
 tap_text "moi-schetschiki-backup.zip"
 wait_text "Восстановить резервную копию?" 30

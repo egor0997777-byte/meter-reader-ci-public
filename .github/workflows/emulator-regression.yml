@@ -12,6 +12,7 @@ on:
       - '.github/scripts/android-v11-v14-compat.sh'
       - '.github/scripts/android-v12-db-check.sh'
       - '.github/scripts/android-v14-backup-restore.sh'
+      - '.github/scripts/android-v14-fault-regression.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:
 
@@ -27,7 +28,7 @@ env:
 jobs:
   emulator-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -92,6 +93,7 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-v14-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression.sh"
 
       - name: Upload regression screenshots
         if: always()

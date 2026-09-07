@@ -1,0 +1,180 @@
+package ru.egor.meters
+
+import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.os.StatFs
+import androidx.core.content.FileProvider
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.time.YearMonth
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import java.util.UUID
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+
+data class BackupPayload(
+    val addresses: List<Address>,
+    val photos: Map<String, ByteArray>,
+    val submissions: List<Submission> = emptyList(),
+    val databaseBytes: ByteArray? = null,
+    val metadata: BackupMetadata = BackupMetadata()
+)
+
+data class PreparedRestore(
+    val addresses: List<Address>,
+    val rootDir: File?
+)
+
+object MeterTransfer {
+    const val FORMAT = "moi-schetschiki-backup"
+    const val VERSION = 4
+    private const val MAX_PHOTO_BYTES = 25 * 1024 * 1024
+    private const val MAX_DATABASE_BYTES = 128 * 1024 * 1024
+    private const val MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+    private const val MAX_JSON_BYTES = 8 * 1024 * 1024
+    private const val MAX_ENTRY_COUNT = 4096
+    private const val LOCAL_BACKUP_LIMIT = 3
+    private const val DATABASE_ENTRY = "database/meter-reader.db"
+
+    fun createBackup(
+        context: Context,
+        addresses: List<Address>,
+        submissions: List<Submission> = emptyList()
+    ): ByteArray {
+        val photoBytes = linkedMapOf<String, ByteArray>()
+        addresses.flatMap { it.meters }.flatMap { it.readings }.forEach { reading ->
+            val uri = reading.photoUri ?: return@forEach
+            val bytes = context.contentResolver.openInputStream(Uri.parse(uri))?.use { it.readBytesLimited(MAX_PHOTO_BYTES) }
+                ?: error("Не удалось прочитать фото для показания ${reading.id}")
+            require(bytes.isNotEmpty()) { "Фото для показания ${reading.id} пустое" }
+            photoBytes[reading.id] = bytes
+        }
+        val databaseBytes = createDatabaseSnapshot(context, addresses, submissions)
+        val metadata = BackupMetadataStore.capture(context, addresses)
+        return createBackupBytes(addresses, submissions, photoBytes, databaseBytes, metadata)
+    }
+
+    internal fun createBackupBytes(
+        addresses: List<Address>,
+        submissions: List<Submission> = emptyList(),
+        photos: Map<String, ByteArray> = emptyMap(),
+        databaseBytes: ByteArray = sqliteHeaderStub(),
+        metadata: BackupMetadata = BackupMetadata()
+    ): ByteArray {
+        validate(addresses, submissions)
+        BackupMetadataStore.validate(metadata, addresses)
+        val expectedPhotoIds = addresses.flatMap { it.meters }.flatMap { it.readings }
+            .filter { it.photoUri != null }.map { it.id }.toSet()
+        require(expectedPhotoIds == photos.keys) { "Набор фото не соответствует данным резервной копии" }
+        require(isSQLiteDatabase(databaseBytes)) { "Снимок базы данных повреждён" }
+        require(databaseBytes.size <= MAX_DATABASE_BYTES) { "Снимок базы данных слишком большой" }
+
+        val entries = linkedMapOf<String, ByteArray>()
+        entries["data.json"] = toJson(addresses, submissions, metadata).toString(2).toByteArray(StandardCharsets.UTF_8).also {
+            require(it.size <= MAX_JSON_BYTES) { "Описание резервной копии слишком большое" }
+        }
+        entries[DATABASE_ENTRY] = databaseBytes
+        photos.forEach { (readingId, bytes) ->
+            require(bytes.isNotEmpty()) { "Пустое фото в резервной копии" }
+            require(bytes.size <= MAX_PHOTO_BYTES) { "Слишком большое фото в резервной копии" }
+            entries["photos/$readingId.jpg"] = bytes
+        }
+        require(entries.size <= MAX_ENTRY_COUNT) { "Слишком много файлов в резервной копии" }
+        val totalBytes = entries.values.sumOf { it.size.toLong() }
+        require(totalBytes <= MAX_ARCHIVE_BYTES) { "Резервная копия слишком большая" }
+
+        val manifest = JSONObject().apply {
+            put("format", FORMAT)
+            put("version", VERSION)
+            put("createdAt", System.currentTimeMillis())
+            put("entries", JSONArray().apply {
+                entries.forEach { (path, bytes) ->
+                    put(JSONObject().apply {
+                        put("path", path)
+                        put("size", bytes.size)
+                        put("sha256", sha256(bytes))
+                    })
+                }
+            })
+        }
+        val manifestBytes = manifest.toString(2).toByteArray(StandardCharsets.UTF_8)
+        require(manifestBytes.size <= MAX_JSON_BYTES) { "Manifest резервной копии слишком большой" }
+
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zip ->
+            zip.putNextEntry(ZipEntry("manifest.json"))
+            zip.write(manifestBytes)
+            zip.closeEntry()
+            entries.forEach { (path, bytes) ->
+                zip.putNextEntry(ZipEntry(path))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+        }
+        return out.toByteArray().also {
+            require(it.size <= MAX_ARCHIVE_BYTES) { "Резервная копия слишком большая" }
+        }
+    }
+
+    fun parseBackup(bytes: ByteArray): BackupPayload {
+        require(bytes.isNotEmpty()) { "Пустой файл резервной копии" }
+        require(bytes.size <= MAX_ARCHIVE_BYTES) { "Резервная копия слишком большая" }
+
+        val entries = linkedMapOf<String, ByteArray>()
+        var extractedBytes = 0L
+        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                val name = entry.name
+                require(isSafeEntryName(name)) { "Некорректный путь в архиве" }
+                require(name !in entries) { "Повторяющийся файл в архиве" }
+                require(entries.size < MAX_ENTRY_COUNT) { "Слишком много файлов в резервной копии" }
+                val limit = when {
+                    name == "manifest.json" || name == "data.json" -> MAX_JSON_BYTES
+                    name == DATABASE_ENTRY -> MAX_DATABASE_BYTES
+                    name.startsWith("photos/") -> MAX_PHOTO_BYTES
+                    else -> MAX_JSON_BYTES
+                }
+                val data = zip.readBytesLimited(limit)
+                extractedBytes += data.size
+                require(extractedBytes <= MAX_ARCHIVE_BYTES) { "Распакованные данные резервной копии слишком большие" }
+                entries[name] = data
+                zip.closeEntry()
+            }
+        }
+
+        val manifestBytes = entries.remove("manifest.json")
+            ?: error("В архиве нет manifest.json")
+        val manifest = JSONObject(manifestBytes.toString(StandardCharsets.UTF_8))
+        require(manifest.optString("format") == FORMAT) { "Это не резервная копия «Мои счётчики»" }
+        val version = manifest.optInt("version")
+        require(version in 1..VERSION) { "Версия резервной копии не поддерживается" }
+
+        val root: JSONObject
+        val photos: Map<String, ByteArray>
+        val databaseBytes: ByteArray?
+        if (version >= 4) {
+            val declared = manifest.getJSONArray("entries")
+            require(declared.length() <= MAX_ENTRY_COUNT) { "Слишком много файлов в manifest" }
+            val expected = linkedMapOf<String, Pair<Long, String>>()
+            for (i in 0 until declared.length()) {
+                val item = declared.getJSONObject(i)
+                val path = item.getString("path")
+                require(isSafeEntryName(path) && path != "manifest.json") { "Некорректный путь в manifest" }
+                require(path !in expected) { "Повторяющийся путь в manifest" }
+                expected[path] = item.getLong("size") to item.getString("sha256").lowercase(Locale.US)
+            }
+            require(expected.keys == entries.keys) { "Состав архива не совпадает с manifest" }
+            entries.forEach { (path, data) ->
+                val (declaredSize, declaredHash) = expected.getValue(path)
+                require(declaredSize == data.size.toLong()) { "Размер файла $path не совпадает с manifest" }

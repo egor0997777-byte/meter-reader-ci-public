@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ci-import-v1.4
+      - ci-fix-v1.4
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,180 @@
+package ru.egor.meters
+
+import android.content.Context
+import android.net.Uri
+import org.json.JSONArray
+import java.math.BigDecimal
+import java.time.YearMonth
+import java.util.UUID
+
+data class Reading(
+    val id:String=UUID.randomUUID().toString(),
+    val value:Double,
+    val timestamp:Long=System.currentTimeMillis(),
+    val photoUri:String?=null,
+    val note:String="",
+    val valueText:String?=null,
+    val rollover:Boolean=false,
+    val zoneValues:Map<String,String> = valueText?.let{mapOf("TOTAL" to it)}?:emptyMap(),
+    val billingPeriod:String?=null
+)
+
+data class Meter(
+    val id:String=UUID.randomUUID().toString(),
+    val name:String,
+    val unit:String,
+    val kind:String="other",
+    val serial:String="",
+    val readings:List<Reading> = emptyList(),
+    val integerDigits:Int?=null,
+    val fractionDigits:Int?=null,
+    val previousMeterId:String?=null,
+    val installedAt:Long?=null,
+    val verificationUntil:Long?=null,
+    val status:String?=null,
+    val account:String="",
+    val recipient:String="",
+    val tariffZones:List<String> = MeterZones.SINGLE,
+    val tariffSchedule:List<TariffScheduleEntry> = emptyList(),
+    val location:String="",
+    val meteringPointId:String?=null
+)
+
+data class Address(val id:String=UUID.randomUUID().toString(),val name:String,val meters:List<Meter> = emptyList(),val account:String="",val recipient:String="")
+
+data class SubmissionItem(val meteringPointId:String,val meterId:String,val zone:String="TOTAL",val valueText:String)
+data class Submission(val id:String=UUID.randomUUID().toString(),val addressId:String,val billingPeriod:String,val submittedAt:Long=System.currentTimeMillis(),val recipient:String="",val snapshotText:String="",val items:List<SubmissionItem> = emptyList())
+
+class MeterRepository(
+ private val context:Context,
+ private val db:MeterDatabase=MeterDatabase.get(context),
+ private val migrateLegacy:Boolean=true
+){
+ private val dao=db.meterDao();private val legacyPrefs=context.getSharedPreferences("meters",Context.MODE_PRIVATE)
+ private var lastLoadedSnapshot:List<Address>?=null
+ init{if(migrateLegacy)migrateLegacyJsonIfNeeded()}
+
+ fun load():List<Address> = loadCurrent().also { lastLoadedSnapshot=it }
+
+ private fun loadCurrent():List<Address>{
+  val addresses=dao.addresses()
+  val points=dao.meteringPoints().associateBy{it.id}
+  val meters=dao.meters().groupBy{it.addressId}
+  val readings=dao.readings().groupBy{it.meterId}
+  val values=dao.readingValues().groupBy{it.readingId}
+  val schedules=dao.tariffSchedule().groupBy{it.meterId}
+  return addresses.map{a->Address(a.id,a.name,meters[a.id].orEmpty().map{m->
+   val point=m.meteringPointId?.let(points::get)
+   Meter(
+    id=m.id,
+    name=point?.name?:m.name,
+    unit=point?.unit?:m.unit,
+    kind=point?.kind?:m.kind,
+    serial=m.serial,
+    readings=readings[m.id].orEmpty().mapNotNull{r->
+     val zoneMap=values[r.id].orEmpty().associate{it.zone to it.valueText}
+     val primary=zoneMap["TOTAL"]?:zoneMap["T1"]?:return@mapNotNull null
+     Reading(r.id,primary.toDoubleOrNull()?:return@mapNotNull null,r.timestamp,r.photoUri,r.note,primary,r.source=="manual_rollover",zoneMap,r.billingPeriod)
+    },
+    integerDigits=m.integerDigits,
+    fractionDigits=m.fractionDigits,
+    previousMeterId=m.previousMeterId,
+    installedAt=m.installedAt,
+    verificationUntil=m.verificationUntil,
+    status=m.status,
+    account=point?.account?.ifBlank{m.account}?:m.account,
+    recipient=point?.recipient?.ifBlank{m.recipient}?:m.recipient,
+    tariffZones=MeterZones.normalize(m.tariffZones.split(',')),
+    tariffSchedule=schedules[m.id].orEmpty().map{TariffScheduleEntry(it.zone,it.validFrom,it.priceText)},
+    location=point?.location?.ifBlank{m.location}?:m.location,
+    meteringPointId=m.meteringPointId
+   )
+  },a.account,a.recipient)}
+ }
+
+ fun submissions(addressId:String?=null):List<Submission>{
+  val items=dao.submissionItems().groupBy{it.submissionId}
+  return dao.submissions().filter{addressId==null||it.addressId==addressId}.map{s->
+   Submission(s.id,s.addressId,s.billingPeriod,s.submittedAt,s.recipient,s.snapshotText,items[s.id].orEmpty().map{SubmissionItem(it.meteringPointId,it.meterId,it.zone,it.valueText)})
+  }
+ }
+
+ fun recordSubmission(submission:Submission){
+  require(runCatching{YearMonth.parse(submission.billingPeriod)}.isSuccess){"Некорректный отчётный период"}
+  require(submission.items.isNotEmpty()){ "Передача не содержит показаний" }
+  db.runInTransaction{
+   dao.insertSubmissions(listOf(SubmissionEntity(submission.id,submission.addressId,submission.billingPeriod,submission.submittedAt,submission.recipient,submission.snapshotText)))
+   dao.insertSubmissionItems(submission.items.map{SubmissionItemEntity(submission.id,it.meteringPointId,it.meterId,it.zone,it.valueText)})
+  }
+ }
+
+ fun save(addresses:List<Address>){
+  val old=dao.readings().mapNotNull{it.photoUri}.toSet()
+  val baseline=lastLoadedSnapshot
+  val current=loadCurrent()
+  val merged=if(baseline==null)addresses else mergeUserChanges(baseline,addresses,current)
+  replaceAll(merged,true,null)
+  val fresh=loadCurrent()
+  val currentPhotos=fresh.flatMap{it.meters}.flatMap{it.readings}.mapNotNull{it.photoUri}.toSet()
+  (old-currentPhotos).forEach(::deleteOwnedPhoto)
+  lastLoadedSnapshot=fresh
+ }
+
+ fun restoreValidated(addresses:List<Address>,submissions:List<Submission> = emptyList()){
+  val validationName="restore-validation-${UUID.randomUUID()}.db"
+  val validationDb=MeterDatabase.openTemporary(context,validationName)
+  try{
+   val validationRepo=MeterRepository(context,validationDb,false)
+   validationRepo.replaceAll(addresses,false,submissions)
+   validationDb.openHelper.writableDatabase.query("PRAGMA foreign_key_check").use{cursor->
+    require(!cursor.moveToFirst()){ "В резервной копии нарушены связи данных" }
+   }
+   validationDb.openHelper.writableDatabase.query("PRAGMA integrity_check").use{cursor->
+    require(cursor.moveToFirst()&&cursor.getString(0)=="ok"){ "Временная база не прошла integrity_check" }
+   }
+  }finally{
+   validationDb.close()
+   context.deleteDatabase(validationName)
+  }
+  val old=dao.readings().mapNotNull{it.photoUri}.toSet()
+  val restoredPhotos=addresses.flatMap{it.meters}.flatMap{it.readings}.mapNotNull{it.photoUri}.toSet()
+  // From this point replaceAll is the commit point. Do not let post-commit refresh/cleanup turn
+  // a successful DB replacement into a reported failure, because the caller would then delete
+  // prepared photos that the committed DB already references.
+  replaceAll(addresses,false,submissions)
+  lastLoadedSnapshot=runCatching{loadCurrent()}.getOrDefault(addresses)
+  (old-restoredPhotos).forEach(::deleteOwnedPhoto)
+ }
+
+ private fun mergeUserChanges(base:List<Address>,updated:List<Address>,current:List<Address>):List<Address>{
+  val baseById=base.associateBy{it.id};val updatedById=updated.associateBy{it.id}
+  val removedIds=baseById.keys-updatedById.keys
+  val result=current.filterNot{it.id in removedIds}.toMutableList()
+  updated.forEach{u->
+   val b=baseById[u.id]
+   if(b==null){
+    if(result.none{it.id==u.id})result+=u
+   }else{
+    val index=result.indexOfFirst{it.id==u.id}
+    if(index>=0)result[index]=mergeAddress(b,u,result[index])
+   }
+  }
+  return result
+ }
+
+ private fun mergeAddress(base:Address,updated:Address,current:Address):Address{
+  val baseMeters=base.meters.associateBy{it.id};val updatedMeters=updated.meters.associateBy{it.id}
+  val removedIds=baseMeters.keys-updatedMeters.keys
+  val meters=current.meters.filterNot{it.id in removedIds}.toMutableList()
+  updated.meters.forEach{u->
+   val b=baseMeters[u.id]
+   if(b==null){
+    if(meters.none{it.id==u.id})meters+=u
+   }else{
+    val index=meters.indexOfFirst{it.id==u.id}
+    if(index>=0)meters[index]=mergeMeter(b,u,meters[index])
+   }
+  }
+  return current.copy(
+   name=pick(base.name,updated.name,current.name),
+   meters=meters,

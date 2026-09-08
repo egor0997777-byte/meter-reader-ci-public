@@ -7,6 +7,8 @@ ENOSPC_BACKUP="$GITHUB_WORKSPACE/v14-enospc.zip"
 DB_BEFORE="$GITHUB_WORKSPACE/v14-enospc-before.db"
 DB_AFTER="$GITHUB_WORKSPACE/v14-enospc-after.db"
 FILLER="/sdcard/Download/v14-enospc-fill.bin"
+APP_PICTURES="/storage/emulated/0/Android/data/$PACKAGE_NAME/files/Pictures"
+REQUIRED_KB=$((9 * 1024))
 
 cleanup(){ adb shell rm -f "$FILLER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -36,9 +38,13 @@ start_app(){ adb shell am force-stop "$PACKAGE_NAME" >/dev/null; adb shell am st
 open_data(){ start_app; tap_text "Учёт и история"; wait_text "Мои счётчики"; tap_text "Данные"; wait_text "Восстановить из копии"; }
 select_download_file(){ local file="$1"; if ! has_text "$file"; then wait_text "Show roots" 20; tap_text "Show roots"; wait_text "Downloads" 20; tap_text "Downloads"; fi; wait_text "$file" 40; tap_text "$file"; }
 copy_db(){ local dst="$1"; adb shell am force-stop "$PACKAGE_NAME" >/dev/null; sleep .4; adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$dst"; test -s "$dst"; }
+available_kb(){
+  local path="$1"
+  adb shell "df -Pk '$path' 2>/dev/null" | tr -d '\r' | tail -n 1 | awk '{print $4}'
+}
 
-# Build a valid v4 archive with an 8 MiB photo. It remains small on disk because the filler is highly compressible,
-# while restore must reserve/write the full uncompressed photo size plus the production 1 MiB safety margin.
+# Build a valid v4 archive with an 8 MiB photo. Restore needs the full 8 MiB plus
+# the production 1 MiB safety margin, i.e. just over 9 MiB of app-visible free space.
 test -s "$BASE_BACKUP"
 python3 - "$BASE_BACKUP" "$ENOSPC_BACKUP" <<'PY'
 import hashlib,json,sys,zipfile
@@ -66,16 +72,39 @@ PY
 adb push "$ENOSPC_BACKUP" /sdcard/Download/v14-enospc.zip >/dev/null
 copy_db "$DB_BEFORE"
 
-# Exhaust emulated shared storage only after the valid archive is already present. Leave ~4 MiB,
-# below the production restore requirement (~9 MiB) but enough for UI/SQLite housekeeping.
-avail_kb=$(adb shell df -k /sdcard | tail -n 1 | tr -d '\r' | awk '{print $4}')
-test -n "$avail_kb"
-fill_mb=$(( avail_kb / 1024 - 4 ))
-if (( fill_mb <= 16 )); then echo "Unexpectedly low free space before ENOSPC setup: ${avail_kb} KiB" >&2; exit 1; fi
+# The production guard calls StatFs on getExternalFilesDir(Pictures), not on /sdcard/Download.
+# Measure the app's actual external-files filesystem and size the filler from that same mount.
+echo "ENOSPC filesystem diagnostics before fill:"
+adb shell "df -Pk /sdcard || true"
+adb shell "df -Pk '$APP_PICTURES' || true"
+adb shell "stat -f '$APP_PICTURES' 2>/dev/null || true"
+app_avail_kb=$(available_kb "$APP_PICTURES")
+if ! [[ "$app_avail_kb" =~ ^[0-9]+$ ]]; then
+  echo "Could not measure free space on app pictures path: $APP_PICTURES" >&2
+  exit 1
+fi
+fill_mb=$(( app_avail_kb / 1024 - 4 ))
+if (( fill_mb <= 16 )); then
+  echo "Unexpectedly low free space before ENOSPC setup: ${app_avail_kb} KiB at $APP_PICTURES" >&2
+  exit 1
+fi
 adb shell "dd if=/dev/zero of='$FILLER' bs=1048576 count=$fill_mb >/dev/null 2>&1 || true"
-remaining_kb=$(adb shell df -k /sdcard | tail -n 1 | tr -d '\r' | awk '{print $4}')
-if (( remaining_kb >= 9*1024 )); then echo "Could not create deterministic low-space condition: ${remaining_kb} KiB remain" >&2; exit 1; fi
 
+remaining_kb=$(available_kb "$APP_PICTURES")
+echo "ENOSPC filesystem diagnostics after fill:"
+adb shell "df -Pk /sdcard || true"
+adb shell "df -Pk '$APP_PICTURES' || true"
+adb shell "stat -f '$APP_PICTURES' 2>/dev/null || true"
+if ! [[ "$remaining_kb" =~ ^[0-9]+$ ]]; then
+  echo "Could not re-measure app pictures free space" >&2
+  exit 1
+fi
+if (( remaining_kb >= REQUIRED_KB )); then
+  echo "Could not create deterministic low-space condition on app pictures filesystem: ${remaining_kb} KiB remain" >&2
+  exit 1
+fi
+
+echo "ENOSPC precondition proven: ${remaining_kb} KiB remain at $APP_PICTURES (< ${REQUIRED_KB} KiB)"
 open_data
 tap_text "Восстановить из копии"
 select_download_file "v14-enospc.zip"

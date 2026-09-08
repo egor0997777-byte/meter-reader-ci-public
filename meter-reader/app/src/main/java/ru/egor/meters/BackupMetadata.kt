@@ -24,6 +24,7 @@ object BackupMetadataStore {
     private const val METADATA_VERSION = 1
     private const val TEMPLATE_PREFS = "submission_templates"
     private const val REMINDER_PREFS = "meter_reminders"
+    private const val WALK_PREFS = "v13_walkthrough"
 
     fun capture(context: Context, addresses: List<Address>): BackupMetadata {
         val addressIds = addresses.map { it.id }.toSet()
@@ -96,13 +97,45 @@ object BackupMetadataStore {
         }
     }
 
+    /**
+     * Applies transferable metadata as the second half of a full restore. MeterRepository keeps a
+     * durable rollback journal until this function commits successfully. Any metadata failure
+     * rolls Room + metadata back to the previous complete state; a process death is recovered from
+     * the same journal on the next MeterRepository startup.
+     */
     fun apply(context: Context, metadata: BackupMetadata, addresses: List<Address>) {
+        try {
+            applyMetadataOnly(context, metadata, addresses)
+            MeterRepository.commitRestoreTransaction(context)
+        } catch (failure: Throwable) {
+            val rollbackFailure = runCatching { MeterRepository.rollbackRestoreTransaction(context) }.exceptionOrNull()
+            if (rollbackFailure != null) {
+                val combined = IllegalStateException(
+                    "Не удалось завершить восстановление и автоматически откатить данные. При следующем запуске приложение повторит безопасный откат.",
+                    failure
+                )
+                combined.addSuppressed(rollbackFailure)
+                throw combined
+            }
+            throw failure
+        }
+    }
+
+    internal fun applyMetadataOnly(context: Context, metadata: BackupMetadata, addresses: List<Address>) {
         validate(metadata, addresses)
+
+        val walkthroughPrefs = context.getSharedPreferences(WALK_PREFS, Context.MODE_PRIVATE)
+        val previousWalkthrough = walkthroughPrefs.all.toMap()
 
         // v1-v3 and early development v4 archives had no transferable settings metadata. Restoring
         // one of those archives must not silently clear settings that already exist on this device.
         if (!metadata.included) {
-            context.getSharedPreferences("v13_walkthrough", Context.MODE_PRIVATE).edit().clear().commit()
+            try {
+                check(walkthroughPrefs.edit().clear().commit()) { "Не удалось очистить незавершённый обход" }
+            } catch (failure: Throwable) {
+                restorePreferences(walkthroughPrefs, previousWalkthrough)
+                throw failure
+            }
             return
         }
 
@@ -130,19 +163,18 @@ object BackupMetadataStore {
                 reminderEditor.putLong("meter:$meterId:last_verification", millis)
             }
             check(reminderEditor.commit()) { "Не удалось восстановить настройки напоминаний" }
+
+            // Security credentials/settings and an in-progress walkthrough are intentionally
+            // device/session specific and are never transferred to another phone.
+            check(walkthroughPrefs.edit().clear().commit()) { "Не удалось очистить незавершённый обход" }
         } catch (failure: Throwable) {
-            // The two preference files form one transferable metadata unit. If either synchronous
-            // commit fails, restore both previous snapshots instead of leaving half-applied backup
-            // settings. The Room restore has its own transaction boundary; this protects the
-            // ancillary metadata boundary from partial writes.
+            // Templates, reminders and walkthrough form one ancillary metadata transaction. If any
+            // synchronous commit fails, restore every previous snapshot before Room rollback runs.
             restorePreferences(templatePrefs, previousTemplates)
             restorePreferences(reminderPrefs, previousReminders)
+            restorePreferences(walkthroughPrefs, previousWalkthrough)
             throw failure
         }
-
-        // Security credentials/settings and an in-progress walkthrough are intentionally device/session specific.
-        // They are not transferred to another phone. A successful restore starts with no stale walkthrough session.
-        context.getSharedPreferences("v13_walkthrough", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
     private fun restorePreferences(preferences: SharedPreferences, snapshot: Map<String, *>) {

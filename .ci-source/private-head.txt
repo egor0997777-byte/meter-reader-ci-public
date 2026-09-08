@@ -1,6 +1,6 @@
 egor0997777-byte/android-apps
 branch: meter-reader-v2.0
-private_head: 75917d353e57d8faea3cd6b4d75b5a4df623a450
-private_meter_reader_tree: f9038dae6ec04ccbff70e90d32d9f03845511df3
+private_head: ac60fb744c4344674c1a97ac8fde93bb204750ef
+private_meter_reader_tree: ffae5904fd49fb79a660daa801d7d064707e6eae
 public_ci_branch: ci-fix-v2.0
 purpose: CI/test mirror only; private repository is canonical

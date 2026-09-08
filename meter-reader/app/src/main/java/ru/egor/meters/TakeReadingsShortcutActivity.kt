@@ -28,10 +28,9 @@ object TakeReadingsShortcutRouting {
             return TakeReadingsTarget(resumable.id, sessionPeriod, true)
         }
 
-        val activeAddresses = addresses.filter { address -> address.meters.any { it.status != "closed" } }
-        val next = activeAddresses.firstOrNull { remainingForPeriod(it, now) > 0 }
-            ?: activeAddresses.firstOrNull()
-            ?: return null
+        val next = addresses.firstOrNull { address ->
+            address.meters.any { it.status != "closed" } && remainingForPeriod(address, now) > 0
+        } ?: return null
         return TakeReadingsTarget(next.id, now, false)
     }
 

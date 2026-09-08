@@ -12,6 +12,7 @@ on:
       - '.github/scripts/android-v11-v14-compat.sh'
       - '.github/scripts/android-v12-db-check.sh'
       - '.github/scripts/android-v14-backup-restore.sh'
+      - '.github/scripts/android-v14-backup-restore-compat.sh'
       - '.github/scripts/android-v14-fault-regression.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:
@@ -92,7 +93,7 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-v14-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression.sh"
 
       - name: Upload regression screenshots

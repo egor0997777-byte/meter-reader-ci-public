@@ -36,7 +36,7 @@ class ReminderWorker(
                 TransferWindow(settings.startDay, settings.endDay, settings.enabled)
             )
             val submissionStatus = SubmissionWorkflow.statusForAddress(repo, address, month)
-            if (transferStatus == TransferStatus.DUE && submissionStatus != SubmissionStatus.COMPLETE) {
+            if (ReminderPolicy.shouldSendTransferReminder(transferStatus, submissionStatus)) {
                 post(
                     id = stableId("transfer:${address.id}"),
                     title = if (submissionStatus == SubmissionStatus.PARTIAL) "Передача показаний не завершена" else "Пора передать показания",

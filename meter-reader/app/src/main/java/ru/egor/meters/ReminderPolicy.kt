@@ -32,6 +32,11 @@ object ReminderPolicy {
         }
     }
 
+    fun shouldSendTransferReminder(
+        transferStatus: TransferStatus,
+        submissionStatus: SubmissionStatus
+    ): Boolean = transferStatus == TransferStatus.DUE && submissionStatus != SubmissionStatus.COMPLETE
+
     fun verificationStatus(
         verificationUntilMillis: Long?,
         now: LocalDate,

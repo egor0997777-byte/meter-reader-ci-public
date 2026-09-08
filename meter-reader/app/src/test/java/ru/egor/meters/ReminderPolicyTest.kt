@@ -1,6 +1,8 @@
 package ru.egor.meters
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
 import java.time.YearMonth
@@ -19,6 +21,15 @@ class ReminderPolicyTest {
             TransferStatus.DISABLED,
             ReminderPolicy.transferStatus(LocalDate.of(2026, 9, 20), TransferWindow(enabled = false))
         )
+    }
+
+    @Test fun transferReminderStopsOnlyAfterSubmissionIsComplete() {
+        assertTrue(ReminderPolicy.shouldSendTransferReminder(TransferStatus.DUE, SubmissionStatus.NONE))
+        assertTrue(ReminderPolicy.shouldSendTransferReminder(TransferStatus.DUE, SubmissionStatus.PARTIAL))
+        assertFalse(ReminderPolicy.shouldSendTransferReminder(TransferStatus.DUE, SubmissionStatus.COMPLETE))
+        assertFalse(ReminderPolicy.shouldSendTransferReminder(TransferStatus.UPCOMING, SubmissionStatus.NONE))
+        assertFalse(ReminderPolicy.shouldSendTransferReminder(TransferStatus.PASSED, SubmissionStatus.PARTIAL))
+        assertFalse(ReminderPolicy.shouldSendTransferReminder(TransferStatus.DISABLED, SubmissionStatus.NONE))
     }
 
     @Test fun verificationDistinguishesSoonAndExpired() {

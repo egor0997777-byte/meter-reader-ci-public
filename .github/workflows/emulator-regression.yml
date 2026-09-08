@@ -98,8 +98,8 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression-compat.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-enospc.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-app-lock.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-enospc.sh"
 
       - name: Upload regression screenshots
         if: always()

@@ -4,9 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import java.time.Instant
 import java.time.YearMonth
-import java.time.ZoneId
 
 data class TakeReadingsTarget(
     val addressId: String,
@@ -36,17 +34,8 @@ object TakeReadingsShortcutRouting {
 
     fun remainingForPeriod(address: Address, period: YearMonth): Int =
         address.meters.count { meter ->
-            meter.status != "closed" && meter.readings.none { readingPeriod(it) == period }
+            meter.status != "closed" && meter.readings.none { BillingPeriodResolver.readingPeriod(it) == period }
         }
-
-    private fun readingPeriod(reading: Reading): YearMonth? {
-        reading.billingPeriod?.let { stored ->
-            runCatching { YearMonth.parse(stored) }.getOrNull()?.let { return it }
-        }
-        return runCatching {
-            YearMonth.from(Instant.ofEpochMilli(reading.timestamp).atZone(ZoneId.systemDefault()))
-        }.getOrNull()
-    }
 }
 
 class TakeReadingsShortcutActivity : Activity() {

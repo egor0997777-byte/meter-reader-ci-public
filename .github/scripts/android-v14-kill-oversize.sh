@@ -3,12 +3,15 @@ set -euo pipefail
 
 UI_XML="$GITHUB_WORKSPACE/v14-kill-window.xml"
 BASE_BACKUP="$GITHUB_WORKSPACE/v14-clean-device-backup.zip"
+PHOTO_BACKUP="$GITHUB_WORKSPACE/v14-photo-A.zip"
 KILL_BACKUP="$GITHUB_WORKSPACE/v14-kill-target.zip"
 OVERSIZE_BACKUP="$GITHUB_WORKSPACE/v14-oversized-entry.zip"
 DB_BASE="$GITHUB_WORKSPACE/v14-kill-base.db"
 DB_AFTER_OVERSIZE="$GITHUB_WORKSPACE/v14-after-oversize.db"
 DB_AFTER_PREKILL="$GITHUB_WORKSPACE/v14-after-precommit-kill.db"
 DB_AFTER_POSTKILL="$GITHUB_WORKSPACE/v14-after-postcommit-kill.db"
+DB_AFTER_JOURNAL_RECOVERY="$GITHUB_WORKSPACE/v14-after-journal-recovery.db"
+PHOTO_URI_MAP="$GITHUB_WORKSPACE/v14-rollback-photo-uris.json"
 NAME_FILE="$GITHUB_WORKSPACE/v14-kill-names.txt"
 APP_PICTURES="/storage/emulated/0/Android/data/$PACKAGE_NAME/files/Pictures"
 
@@ -94,8 +97,10 @@ PY
 }
 staging_count(){ adb shell "ls -1d '$APP_PICTURES'/restore_staging_* 2>/dev/null | wc -l" | tr -d '\r[:space:]'; }
 
-# The previous clean-restore regression creates a real v4 backup from the exact product tree.
+# The preceding regressions create both the clean v4 backup and restore-A backup. At entry the live
+# DB is restore A (including its committed photo), because failed B and ENOSPC were proven non-mutating.
 test -s "$BASE_BACKUP"
+test -s "$PHOTO_BACKUP"
 
 # Build two adversarial fixtures without altering product code:
 # 1) a valid restore that changes the address name and carries large (but individually valid)
@@ -195,9 +200,8 @@ print('pre-commit kill did not expose target dataset')
 PY
 start_app
 
-# Now complete the same restore normally. The success dialog is only shown after the Room commit
-# and metadata application. Kill the process while that dialog is still visible, then prove the
-# committed target dataset survives a cold restart and remains FK/integrity-clean.
+# Complete the same restore normally. The success dialog is only shown after the Room commit,
+# metadata commit and durable committed journal marker. Killing here must keep the new dataset.
 open_data
 tap_text "Восстановить из копии"
 select_download_file "v14-kill-target.zip"
@@ -220,4 +224,35 @@ PY
 start_app
 wait_text "Снять → проверить → передать" 30
 
-echo "v1.4 kill/oversize regression OK: oversized extracted archive is rejected without mutation; kill during staging preserves the old DB; kill after commit preserves the restored DB."
+# Deterministically recreate the exact on-disk crash state that exists if the process dies after
+# the Room swap while the durable journal is still PENDING. We use the proven restore-A archive as
+# rollback.zip and the exact restore-A live photo URIs captured in DB_BASE. On the next cold start
+# MeterRepository must automatically restore A before the UI becomes usable.
+python3 - "$DB_BASE" "$PHOTO_URI_MAP" <<'PY'
+import json,sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+photo_map={rid:uri for rid,uri in c.execute('select id,photoUri from readings where photoUri is not null')}
+with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(photo_map,f,ensure_ascii=False,separators=(',',':'))
+print('rollback photo URI map',photo_map)
+c.close()
+PY
+adb shell am force-stop "$PACKAGE_NAME" >/dev/null
+adb push "$PHOTO_BACKUP" /data/local/tmp/v14-rollback.zip >/dev/null
+adb push "$PHOTO_URI_MAP" /data/local/tmp/v14-photo-uris.json >/dev/null
+adb shell "run-as $PACKAGE_NAME sh -c 'rm -rf files/restore-transaction && mkdir -p files/restore-transaction && cp /data/local/tmp/v14-rollback.zip files/restore-transaction/rollback.zip && cp /data/local/tmp/v14-photo-uris.json files/restore-transaction/photo-uris.json && printf pending > files/restore-transaction/state'"
+adb shell "run-as $PACKAGE_NAME test -s files/restore-transaction/rollback.zip"
+adb shell "run-as $PACKAGE_NAME grep -q pending files/restore-transaction/state"
+start_app
+copy_db "$DB_AFTER_JOURNAL_RECOVERY"
+compare_logical "$DB_BASE" "$DB_AFTER_JOURNAL_RECOVERY" "pending-journal cold-start recovery"
+adb shell "run-as $PACKAGE_NAME test ! -e files/restore-transaction"
+python3 - "$DB_AFTER_JOURNAL_RECOVERY" "$TARGET_NAME" <<'PY'
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+names=[r[0] for r in c.execute('select name from addresses order by id')]
+assert sys.argv[2] not in names,('pending recovery exposed target dataset',names)
+print('pending journal recovery restored previous dataset before UI startup')
+c.close()
+PY
+
+echo "v1.4 kill/oversize regression OK: oversized extracted archive is rejected without mutation; kill during staging preserves the old DB; kill after commit preserves the restored DB; pending crash journal rolls back on cold start."

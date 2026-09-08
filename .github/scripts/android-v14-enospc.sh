@@ -4,11 +4,12 @@ set -euo pipefail
 UI_XML="$GITHUB_WORKSPACE/v14-enospc-window.xml"
 BASE_BACKUP="$GITHUB_WORKSPACE/v14-clean-device-backup.zip"
 ENOSPC_BACKUP="$GITHUB_WORKSPACE/v14-enospc.zip"
+REQUIRED_FILE="$GITHUB_WORKSPACE/v14-enospc-required-kb.txt"
 DB_BEFORE="$GITHUB_WORKSPACE/v14-enospc-before.db"
 DB_AFTER="$GITHUB_WORKSPACE/v14-enospc-after.db"
 FILLER="/sdcard/Download/v14-enospc-fill.bin"
 APP_PICTURES="/storage/emulated/0/Android/data/$PACKAGE_NAME/files/Pictures"
-REQUIRED_KB=$((9 * 1024))
+PHOTO_MB=20
 
 cleanup(){ adb shell rm -f "$FILLER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -66,32 +67,40 @@ available_kb(){
   adb shell "df -Pk '$path' 2>/dev/null" | tr -d '\r' | tail -n 1 | awk '{print $4}'
 }
 
-# Build a valid v4 archive with an 8 MiB photo. Restore needs the full 8 MiB plus
-# the production 1 MiB safety margin, i.e. just over 9 MiB of app-visible free space.
+# Build a valid v4 archive whose photos require far more space than Android's
+# emulated-storage reserve. Earlier CI used one 8 MiB photo while shell df showed
+# ~5 MiB free, but the app UID could still consume reserved space and restore
+# succeeded. Using every existing reading with a 20 MiB photo makes the actual
+# production StatFs guard deterministic without changing product code.
 test -s "$BASE_BACKUP"
-python3 - "$BASE_BACKUP" "$ENOSPC_BACKUP" <<'PY'
+python3 - "$BASE_BACKUP" "$ENOSPC_BACKUP" "$REQUIRED_FILE" "$PHOTO_MB" <<'PY'
 import hashlib,json,sys,zipfile
-src,dst=sys.argv[1],sys.argv[2]
+src,dst,required_file,photo_mb=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
 with zipfile.ZipFile(src) as z:
-    files={n:z.read(n) for n in z.namelist() if n!='manifest.json'}
+    files={n:z.read(n) for n in z.namelist() if n!='manifest.json' and not n.startswith('photos/')}
     old=json.loads(z.read('manifest.json'))
 payload=json.loads(files['data.json'])
-reading=None
+readings=[]
 for a in payload['addresses']:
     for m in a.get('meters',[]):
-        if m.get('readings'):
-            reading=m['readings'][0]; break
-    if reading: break
-assert reading
-reading['hasPhoto']=True
+        readings.extend(m.get('readings',[]))
+assert readings, 'source fixture has no readings'
+photo=b'X'*(photo_mb*1024*1024)
+for reading in readings:
+    reading['hasPhoto']=True
+    files[f"photos/{reading['id']}.jpg"]=photo
 files['data.json']=json.dumps(payload,ensure_ascii=False,indent=2).encode()
-files[f"photos/{reading['id']}.jpg"]=b'X'*(8*1024*1024)
 entries=[{'path':p,'size':len(d),'sha256':hashlib.sha256(d).hexdigest()} for p,d in files.items()]
 manifest={'format':'moi-schetschiki-backup','version':4,'createdAt':old.get('createdAt',0),'entries':entries}
 with zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED) as z:
     z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2).encode())
     for p,d in files.items(): z.writestr(p,d)
+required=sum(len(d) for p,d in files.items() if p.startswith('photos/')) + 1024*1024
+open(required_file,'w').write(str((required+1023)//1024))
+print(f'ENOSPC fixture: {len(readings)} photos x {photo_mb} MiB, production requirement {required} bytes')
 PY
+REQUIRED_KB=$(cat "$REQUIRED_FILE")
+[[ "$REQUIRED_KB" =~ ^[0-9]+$ ]]
 adb push "$ENOSPC_BACKUP" /sdcard/Download/v14-enospc.zip >/dev/null
 copy_db "$DB_BEFORE"
 
@@ -106,6 +115,8 @@ if ! [[ "$app_avail_kb" =~ ^[0-9]+$ ]]; then
   echo "Could not measure free space on app pictures path: $APP_PICTURES" >&2
   exit 1
 fi
+# Leave only ~4 MiB shell-visible. The fixture itself requires >100 MiB on the
+# current source dataset, so even app-reserved headroom cannot satisfy it.
 fill_mb=$(( app_avail_kb / 1024 - 4 ))
 if (( fill_mb <= 16 )); then
   echo "Unexpectedly low free space before ENOSPC setup: ${app_avail_kb} KiB at $APP_PICTURES" >&2
@@ -123,17 +134,17 @@ if ! [[ "$remaining_kb" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 if (( remaining_kb >= REQUIRED_KB )); then
-  echo "Could not create deterministic low-space condition on app pictures filesystem: ${remaining_kb} KiB remain" >&2
+  echo "Could not create deterministic low-space condition on app pictures filesystem: ${remaining_kb} KiB remain, ${REQUIRED_KB} KiB required" >&2
   exit 1
 fi
 
-echo "ENOSPC precondition proven: ${remaining_kb} KiB remain at $APP_PICTURES (< ${REQUIRED_KB} KiB)"
+echo "ENOSPC precondition proven: ${remaining_kb} KiB remain at $APP_PICTURES (< ${REQUIRED_KB} KiB production requirement)"
 open_data
 tap_text "Восстановить из копии"
 select_download_file "v14-enospc.zip"
 wait_text "Восстановить резервную копию?" 30
 tap_text "Восстановить"
-wait_text "Недостаточно свободного места для восстановления фото" 40
+wait_text "Недостаточно свободного места для восстановления фото" 60
 if has_text "OK"; then tap_text "OK"; fi
 
 cleanup

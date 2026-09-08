@@ -142,4 +142,10 @@ adb exec-out run-as "$PACKAGE_NAME" cat shared_prefs/v13_walkthrough.xml > "$GIT
 grep -q '<string name="period">2026-08</string>' "$GITHUB_WORKSPACE/v20-walkthrough-after.xml"
 grep -q "$METER_ID" "$GITHUB_WORKSPACE/v20-walkthrough-after.xml"
 
+# This fixture is deliberately synthetic and must not leak into later regressions.
+# Restore the normal launcher state before the backup/restore and app-lock suites run.
+adb shell "run-as $PACKAGE_NAME rm -f shared_prefs/v13_walkthrough.xml" || true
+adb shell am start -W -f 0x10008000 -n "$PACKAGE_NAME/$PACKAGE_NAME.V13MainActivity" >/dev/null
+wait_text "Снять → проверить → передать" 60
+
 echo "v2.0 shortcut regression OK: packaged shortcut is period-aware and preserves an unfinished explicit-period session."

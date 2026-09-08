@@ -27,15 +27,13 @@ object TakeReadingsShortcutRouting {
         }
 
         val next = addresses.firstOrNull { address ->
-            address.meters.any { it.status != "closed" } && remainingForPeriod(address, now) > 0
+            MonthlyWalkPlanner.progress(address, now).remainingCount > 0
         } ?: return null
         return TakeReadingsTarget(next.id, now, false)
     }
 
     fun remainingForPeriod(address: Address, period: YearMonth): Int =
-        address.meters.count { meter ->
-            meter.status != "closed" && meter.readings.none { BillingPeriodResolver.readingPeriod(it) == period }
-        }
+        MonthlyWalkPlanner.progress(address, period).remainingCount
 }
 
 class TakeReadingsShortcutActivity : Activity() {
@@ -55,11 +53,12 @@ class TakeReadingsShortcutActivity : Activity() {
         val target = TakeReadingsShortcutRouting.resolve(addresses, sessionAddressId, sessionPeriod)
 
         if (target != null && !target.resumeExisting) {
+            val address = addresses.first { it.id == target.addressId }
             check(
                 prefs.edit()
                     .putString("address", target.addressId)
                     .putString("period", target.period.toString())
-                    .putStringSet("done", emptySet())
+                    .putStringSet("done", MonthlyWalkPlanner.completedMeterIds(address, target.period))
                     .putStringSet("skipped", emptySet())
                     .commit()
             ) { "Не удалось подготовить быстрый запуск снятия показаний" }

@@ -22,10 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
-import java.time.ZoneId
 
 private val A13 = Color(0xFF6B5BC7)
 private val BG13 = Color(0xFFF7F7FA)
@@ -38,9 +36,9 @@ private class WalkSession13(context: Context) {
     val period: YearMonth? get() = prefs.getString("period", null)?.let { runCatching { YearMonth.parse(it) }.getOrNull() }
     val done: Set<String> get() = prefs.getStringSet("done", emptySet())?.toSet().orEmpty()
     val skipped: Set<String> get() = prefs.getStringSet("skipped", emptySet())?.toSet().orEmpty()
-    fun start(addressId: String, period: YearMonth) {
+    fun start(addressId: String, period: YearMonth, done: Set<String> = emptySet()) {
         prefs.edit().putString("address", addressId).putString("period", period.toString())
-            .putStringSet("done", emptySet()).putStringSet("skipped", emptySet()).apply()
+            .putStringSet("done", done).putStringSet("skipped", emptySet()).apply()
     }
     fun markDone(meterId: String) { prefs.edit().putStringSet("done", done + meterId).apply() }
     fun markSkipped(meterId: String) { prefs.edit().putStringSet("skipped", skipped + meterId).apply() }
@@ -68,7 +66,12 @@ class V13MainActivity : ComponentActivity() {
             var version by remember { mutableIntStateOf(0) }
             fun persist(updated: List<Address>) { repo.save(updated); data = repo.load() }
             fun startWalk(addressId: String, period: YearMonth = YearMonth.now()) {
-                session.start(addressId, period); walkAddressId = addressId; selectedPeriod = period; version++
+                val address = data.firstOrNull { it.id == addressId }
+                val completed = address?.let { MonthlyWalkPlanner.completedMeterIds(it, period) }.orEmpty()
+                session.start(addressId, period, completed)
+                walkAddressId = addressId
+                selectedPeriod = period
+                version++
             }
             fun resumeWalk(addressId: String, period: YearMonth) {
                 if (session.addressId == addressId && session.period == period) {
@@ -141,9 +144,12 @@ private fun Hub13(
     openMeters: () -> Unit, openTariffs: () -> Unit, openReminders: () -> Unit, openData: () -> Unit, openPrivacy: () -> Unit
 ) {
     val month = YearMonth.now()
-    val resume = data.firstOrNull { it.id == resumableAddressId }
-    val active = data.flatMap { it.meters }.filter { it.status != "closed" }
-    val completed = active.count { meter -> meter.readings.any { readingPeriod13(it) == month } }
+    val resume = if (resumablePeriod == null) null else data.firstOrNull {
+        it.id == resumableAddressId && it.meters.any { meter -> meter.status != "closed" }
+    }
+    val progressByAddress = data.associate { it.id to MonthlyWalkPlanner.progress(it, month) }
+    val activeCount = progressByAddress.values.sumOf { it.activeCount }
+    val completedCount = progressByAddress.values.sumOf { it.completedCount }
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 10.dp),
         contentPadding = PaddingValues(bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -153,17 +159,29 @@ private fun Hub13(
             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = Color.White) {
                 Column(Modifier.padding(16.dp)) {
                     Text(periodStatus13(data, repo, reminderStore, month), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                    Spacer(Modifier.height(6.dp)); Text("В этом периоде снято $completed из ${active.size}", color = M13, fontSize = 13.sp)
+                    Spacer(Modifier.height(6.dp)); Text("В этом периоде снято $completedCount из $activeCount", color = M13, fontSize = 13.sp)
                     Spacer(Modifier.height(14.dp))
                     if (resume != null) {
                         Button(onClick = { resumeWalk(resume.id, resumablePeriod ?: month) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) {
                             Text("Продолжить обход · ${resume.name}", fontWeight = FontWeight.SemiBold)
                         }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    when {
-                        data.size == 1 && active.isNotEmpty() -> Button(onClick = { startWalk(data.first().id, month) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Text("Снять показания заново", fontWeight = FontWeight.SemiBold) }
-                        data.isEmpty() -> Button(onClick = openMeters, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Text("Добавить адрес и счётчик") }
+                    } else {
+                        val only = data.singleOrNull()
+                        val progress = only?.let { progressByAddress[it.id] }
+                        when {
+                            only != null && progress != null && progress.activeCount > 0 -> {
+                                val submissionStatus = SubmissionWorkflow.statusForAddress(repo, only, month)
+                                val action = when {
+                                    progress.remainingCount > 0 -> "Снять показания · осталось ${progress.remainingCount}"
+                                    submissionStatus != SubmissionStatus.COMPLETE -> "Проверить и передать"
+                                    else -> "Посмотреть сводку"
+                                }
+                                Button(onClick = { startWalk(only.id, month) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) {
+                                    Text(action, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                            data.isEmpty() -> Button(onClick = openMeters, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Text("Добавить адрес и счётчик") }
+                        }
                     }
                 }
             }
@@ -171,9 +189,17 @@ private fun Hub13(
         if (data.size > 1) {
             item { Text("Адреса", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }
             data.forEach { address -> item {
-                val count = address.meters.count { it.status != "closed" }
-                Card(onClick = { if (count > 0) startWalk(address.id, month) else openMeters() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(16.dp)) { Text(address.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold); Text(if (count == 0) "Нет активных счётчиков" else "Снять показания · $count", color = M13, fontSize = 12.sp) }
+                val progress = progressByAddress.getValue(address.id)
+                val submissionStatus = if (progress.activeCount == 0) SubmissionStatus.NONE else SubmissionWorkflow.statusForAddress(repo, address, month)
+                val subtitle = when {
+                    progress.activeCount == 0 -> "Нет активных счётчиков"
+                    submissionStatus == SubmissionStatus.COMPLETE -> "Передано"
+                    progress.remainingCount == 0 -> "Снято — осталось передать"
+                    progress.completedCount > 0 -> "Осталось ${progress.remainingCount} из ${progress.activeCount}"
+                    else -> "Снять показания · ${progress.activeCount}"
+                }
+                Card(onClick = { if (progress.activeCount > 0) startWalk(address.id, month) else openMeters() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(16.dp)) { Text(address.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold); Text(subtitle, color = M13, fontSize = 12.sp) }
                 }
             } }
         }
@@ -183,7 +209,7 @@ private fun Hub13(
         item { HubCard13("Напоминания и поверка", "Локальные напоминания и сроки поверки", openReminders) }
         item { HubCard13("Данные", "Безопасный backup, restore и CSV — затем нажмите «Данные»", openData) }
         item { TextButton(onClick = openPrivacy) { Text("Безопасность и конфиденциальность") } }
-        item { Text("Версия 1.4 · offline-first", color = M13, fontSize = 11.sp) }
+        item { Text("Версия 2.0 · offline-first", color = M13, fontSize = 11.sp) }
     }
 }
 
@@ -216,6 +242,7 @@ private fun Walkthrough13(
         zones.forEach { zone -> item { OutlinedTextField(value = values[zone].orEmpty(), onValueChange = { raw -> values = values + (zone to raw.filter { it.isDigit() || it == ',' || it == '.' }.take(20)) }, label = { Text(if (zone == "TOTAL") "Новое показание" else "$zone · новое показание") }, supportingText = { Text(liveDelta13(previousValues[zone], values[zone], current.integerDigits ?: 6)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.fillMaxWidth()) } }
         item { OutlinedTextField(location, { location = it.take(80) }, label = { Text("Где стоит счётчик") }, placeholder = { Text("Ванная, кухня, щиток…") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
         item { OutlinedTextField(note, { note = it.take(240) }, label = { Text("Заметка к периоду · необязательно") }, minLines = 2, modifier = Modifier.fillMaxWidth()) }
+        item { Text("Незаписанные цифры не сохраняются. Для безопасного продолжения нажмите «Сохранить и дальше».", color = M13, fontSize = 11.sp) }
         message?.let { msg -> item { Text(msg, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) } }
         item { Button(onClick = {
             val normalized = ReadingValidator.normalizeForMeter(values, current)
@@ -315,9 +342,9 @@ private fun TemplateDialog13(address: Address, initial: TransmissionTemplate?, d
 
 private fun copy13(ctx: Context, text: String) { val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager; cm.setPrimaryClip(ClipData.newPlainText("Показания", text)) }
 private fun share13(ctx: Context, text: String) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text) }, "Передать показания")) }
-private fun readingPeriod13(reading: Reading): YearMonth? = reading.billingPeriod?.let { runCatching { YearMonth.parse(it) }.getOrNull() } ?: runCatching { YearMonth.from(Instant.ofEpochMilli(reading.timestamp).atZone(ZoneId.systemDefault())) }.getOrNull()
+private fun readingPeriod13(reading: Reading): YearMonth? = BillingPeriodResolver.readingPeriod(reading)
 private fun liveDelta13(previous: String?, current: String?, integerDigits: Int): String { if (previous == null || current.isNullOrBlank()) return "Расход появится после ввода"; val normalized = MeterHistory.normalizeReadingText(current) ?: return "Проверьте формат"; val result = MeterHistory.consumption(previous, normalized, integerDigits, false); return when { result.lowerThanPrevious -> "Меньше прошлого значения — нужна проверка"; result.amount != null -> "Расход: ${MeterHistory.format(result.amount)}"; else -> "Проверьте значение" } }
 private fun statusText13(status: SubmissionStatus): String = when (status) { SubmissionStatus.NONE -> "Ещё не передано"; SubmissionStatus.PARTIAL -> "Передано частично"; SubmissionStatus.COMPLETE -> "Передано" }
-private fun periodStatus13(data: List<Address>, repo: MeterRepository, store: ReminderSettingsStore, month: YearMonth): String { if (data.isEmpty()) return "Добавьте первый адрес"; val today = LocalDate.now(); val statuses = data.map { address -> val settings = store.getAddress(address.id); val active = address.meters.filter { it.status != "closed" }; val completed = active.count { meter -> meter.readings.any { readingPeriod13(it) == month } }; when (SubmissionWorkflow.statusForAddress(repo, address, month)) { SubmissionStatus.COMPLETE -> "Передано"; SubmissionStatus.PARTIAL -> "Передано частично"; SubmissionStatus.NONE -> when { active.isNotEmpty() && completed == active.size -> "Снято — осталось передать"; completed > 0 -> "Частично снято"; today.dayOfMonth < settings.startDay.coerceAtMost(month.lengthOfMonth()) -> "Ещё рано"; today.dayOfMonth > settings.endDay.coerceAtMost(month.lengthOfMonth()) -> "Срок передачи прошёл"; else -> "Пора снять показания" } } }; return if (statuses.distinct().size == 1) statuses.first() else "Есть адреса, требующие внимания" }
+private fun periodStatus13(data: List<Address>, repo: MeterRepository, store: ReminderSettingsStore, month: YearMonth): String { if (data.isEmpty()) return "Добавьте первый адрес"; val today = LocalDate.now(); val statuses = data.map { address -> val settings = store.getAddress(address.id); val progress = MonthlyWalkPlanner.progress(address, month); when (SubmissionWorkflow.statusForAddress(repo, address, month)) { SubmissionStatus.COMPLETE -> "Передано"; SubmissionStatus.PARTIAL -> "Передано частично"; SubmissionStatus.NONE -> when { progress.activeCount == 0 -> "Нет активных счётчиков"; progress.isComplete -> "Снято — осталось передать"; progress.completedCount > 0 -> "Частично снято"; today.dayOfMonth < settings.startDay.coerceAtMost(month.lengthOfMonth()) -> "Ещё рано"; today.dayOfMonth > settings.endDay.coerceAtMost(month.lengthOfMonth()) -> "Срок передачи прошёл"; else -> "Пора снять показания" } } }; return if (statuses.distinct().size == 1) statuses.first() else "Есть адреса, требующие внимания" }
 
 @Composable private fun HubCard13(title: String, body: String, onClick: () -> Unit) { Card(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(horizontal = 16.dp, vertical = 13.dp)) { Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(2.dp)); Text(body, color = M13, fontSize = 12.sp) } } }

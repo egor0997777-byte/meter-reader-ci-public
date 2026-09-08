@@ -37,7 +37,30 @@ tap_text(){ local p; p=$(find_point "$1"); read -r x y <<<"$p"; adb shell input 
 start_app(){ adb shell am force-stop "$PACKAGE_NAME" >/dev/null; adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME$MAIN_ACTIVITY" >/dev/null; wait_text "Снять → проверить → передать"; }
 open_data(){ start_app; tap_text "Учёт и история"; wait_text "Мои счётчики"; tap_text "Данные"; wait_text "Восстановить из копии"; }
 select_download_file(){ local file="$1"; if ! has_text "$file"; then wait_text "Show roots" 20; tap_text "Show roots"; wait_text "Downloads" 20; tap_text "Downloads"; fi; wait_text "$file" 40; tap_text "$file"; }
-copy_db(){ local dst="$1"; adb shell am force-stop "$PACKAGE_NAME" >/dev/null; sleep .4; adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$dst"; test -s "$dst"; }
+copy_db(){
+  local dst="$1"
+  adb shell am force-stop "$PACKAGE_NAME" >/dev/null
+  sleep .6
+  rm -f "$dst" "$dst-wal" "$dst-shm"
+  adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$dst"
+  test -s "$dst"
+  if adb shell "run-as $PACKAGE_NAME test -f databases/meter-reader.db-wal"; then
+    adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db-wal > "$dst-wal"
+  fi
+  if adb shell "run-as $PACKAGE_NAME test -f databases/meter-reader.db-shm"; then
+    adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db-shm > "$dst-shm"
+  fi
+  python3 - "$dst" <<'PY'
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+tables={r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+required={'addresses','metering_points','meters','readings','reading_values','tariff_schedule','submissions','submission_items'}
+assert required <= tables,(required-tables,tables)
+assert c.execute('pragma foreign_key_check').fetchall()==[]
+assert c.execute('pragma integrity_check').fetchone()[0]=='ok'
+c.close()
+PY
+}
 available_kb(){
   local path="$1"
   adb shell "df -Pk '$path' 2>/dev/null" | tr -d '\r' | tail -n 1 | awk '{print $4}'
@@ -125,6 +148,7 @@ def logical(p):
   out[t]=sorted(rows,key=lambda x:json.dumps(x,sort_keys=True,ensure_ascii=False))
  assert c.execute('pragma foreign_key_check').fetchall()==[]
  assert c.execute('pragma integrity_check').fetchone()[0]=='ok'
+ c.close()
  return out
 assert logical(sys.argv[1])==logical(sys.argv[2]),'ENOSPC restore changed live Room data'
 print('ENOSPC restore preserved exact live Room dataset')

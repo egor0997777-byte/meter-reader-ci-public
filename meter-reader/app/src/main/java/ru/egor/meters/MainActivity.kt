@@ -3,6 +3,9 @@ package ru.egor.meters
 import android.content.Context
 import android.net.Uri
 import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.math.BigDecimal
 import java.time.YearMonth
 import java.util.UUID
@@ -48,11 +51,16 @@ data class Submission(val id:String=UUID.randomUUID().toString(),val addressId:S
 class MeterRepository(
  private val context:Context,
  private val db:MeterDatabase=MeterDatabase.get(context),
- private val migrateLegacy:Boolean=true
+ private val migrateLegacy:Boolean=true,
+ private val recoverPendingRestore:Boolean=true
 ){
  private val dao=db.meterDao();private val legacyPrefs=context.getSharedPreferences("meters",Context.MODE_PRIVATE)
+ private val isPrimaryDatabase:Boolean = db === MeterDatabase.get(context)
  private var lastLoadedSnapshot:List<Address>?=null
- init{if(migrateLegacy)migrateLegacyJsonIfNeeded()}
+ init{
+  if(isPrimaryDatabase&&recoverPendingRestore)recoverInterruptedRestore()
+  if(migrateLegacy)migrateLegacyJsonIfNeeded()
+ }
 
  fun load():List<Address> = loadCurrent().also { lastLoadedSnapshot=it }
 
@@ -121,11 +129,12 @@ class MeterRepository(
  }
 
  /**
-  * Validates and replaces the logical Room dataset. When [cleanupRemovedPhotos] is false, files
-  * removed by the replacement are deliberately retained and returned to the caller. This lets a
-  * higher-level restore transaction commit ancillary metadata first and only then delete old
-  * photos. A failed metadata step can therefore roll the Room dataset back without discovering
-  * that its previously referenced photo files were already destroyed.
+  * Validates and replaces the logical Room dataset. For the primary app database a full restore
+  * first writes a durable rollback journal containing the previous Room snapshot, metadata and
+  * exact live photo URIs. Old photos are not removed until BackupMetadataStore has committed the
+  * ancillary metadata. If the process dies after the Room commit but before metadata commits, the
+  * next MeterRepository startup sees the pending journal and restores the previous complete state.
+  * Temporary databases never create a journal.
   */
  fun restoreValidated(
   addresses:List<Address>,
@@ -135,7 +144,7 @@ class MeterRepository(
   val validationName="restore-validation-${UUID.randomUUID()}.db"
   val validationDb=MeterDatabase.openTemporary(context,validationName)
   try{
-   val validationRepo=MeterRepository(context,validationDb,false)
+   val validationRepo=MeterRepository(context,validationDb,false,false)
    validationRepo.replaceAll(addresses,false,submissions)
    validationDb.openHelper.writableDatabase.query("PRAGMA foreign_key_check").use{cursor->
     require(!cursor.moveToFirst()){ "В резервной копии нарушены связи данных" }
@@ -150,17 +159,40 @@ class MeterRepository(
   val old=dao.readings().mapNotNull{it.photoUri}.toSet()
   val restoredPhotos=addresses.flatMap{it.meters}.flatMap{it.readings}.mapNotNull{it.photoUri}.toSet()
   val removedPhotos=old-restoredPhotos
-  // replaceAll is the Room commit point. Photo cleanup can be deferred until metadata has also
-  // committed; callers performing a full restore must not destroy rollback data prematurely.
-  replaceAll(addresses,false,submissions)
+  val transactional=cleanupRemovedPhotos&&isPrimaryDatabase
+  if(transactional){
+   require(!restoreTransactionDir(context).exists()){ "Предыдущее восстановление ещё не завершено" }
+   val previousAddresses=loadCurrent()
+   val previousSubmissions=this.submissions()
+   val previousPhotoUris=previousAddresses.flatMap{it.meters}.flatMap{it.readings}.mapNotNull{r->r.photoUri?.let{r.id to it}}.toMap()
+   val rollbackBytes=MeterTransfer.createBackup(context,previousAddresses,previousSubmissions)
+   beginRestoreTransaction(context,rollbackBytes,previousPhotoUris)
+  }
+  try{
+   // replaceAll is the Room commit point. For a full primary restore the durable transaction
+   // journal remains pending until BackupMetadataStore applies the matching metadata.
+   replaceAll(addresses,false,submissions)
+  }catch(t:Throwable){
+   if(transactional)discardUncommittedRestoreTransaction(context)
+   throw t
+  }
   lastLoadedSnapshot=runCatching{loadCurrent()}.getOrDefault(addresses)
-  if(cleanupRemovedPhotos) cleanupRemovedPhotos(removedPhotos)
+  if(cleanupRemovedPhotos&&!transactional) cleanupRemovedPhotos(removedPhotos)
   return removedPhotos
  }
 
  fun cleanupRemovedPhotos(candidates:Collection<String>){
   val live=dao.readings().mapNotNull{it.photoUri}.toSet()
   candidates.asSequence().filterNot{it in live}.forEach(::deleteOwnedPhoto)
+ }
+
+ private fun recoverInterruptedRestore(){
+  cleanupTransactionTemps(context)
+  val dir=restoreTransactionDir(context)
+  if(!dir.exists())return
+  val state=runCatching{File(dir,TX_STATE).readText(Charsets.UTF_8).trim()}.getOrNull()
+  if(state==TX_COMMITTED) finalizeCommittedRestoreTransaction(context)
+  else rollbackRestoreTransaction(context)
  }
 
  private fun mergeUserChanges(base:List<Address>,updated:List<Address>,current:List<Address>):List<Address> =
@@ -238,5 +270,97 @@ class MeterRepository(
  private fun inferKind(n:String)=when{n.contains("холод",true)->"cold_water";n.contains("горяч",true)->"hot_water";n.contains("элект",true)->"electricity";n.contains("газ",true)->"gas";n.contains("отоп",true)->"heating";else->"other"}
  private fun defaultDigits(k:String)=when(k){"cold_water","hot_water","gas"->5 to 3;"electricity"->6 to 1;"heating"->6 to 3;else->6 to 2}
  private fun decimalText(v:Double)=BigDecimal.valueOf(v).stripTrailingZeros().toPlainString()
- private companion object{const val FLAG="room_migrated_v1"}
+
+ companion object{
+  private const val FLAG="room_migrated_v1"
+  private const val TX_DIR="restore-transaction"
+  private const val TX_PREFIX=".restore-transaction-"
+  private const val TX_ROLLBACK="rollback.zip"
+  private const val TX_PHOTO_URIS="photo-uris.json"
+  private const val TX_STATE="state"
+  private const val TX_PENDING="pending"
+  private const val TX_COMMITTED="committed"
+
+  private fun restoreTransactionDir(context:Context)=File(context.filesDir,TX_DIR)
+
+  private fun writeSynced(file:File,bytes:ByteArray){
+   file.parentFile?.let{require(it.exists()||it.mkdirs()){ "Не удалось подготовить журнал восстановления" }}
+   FileOutputStream(file,false).use{out->out.write(bytes);out.flush();out.fd.sync()}
+  }
+
+  private fun beginRestoreTransaction(context:Context,rollbackBytes:ByteArray,photoUris:Map<String,String>){
+   val target=restoreTransactionDir(context)
+   require(!target.exists()){ "Предыдущее восстановление ещё не завершено" }
+   val temp=File(context.filesDir,"$TX_PREFIX${UUID.randomUUID()}")
+   require(temp.mkdirs()){ "Не удалось подготовить журнал безопасного восстановления" }
+   try{
+    writeSynced(File(temp,TX_ROLLBACK),rollbackBytes)
+    val photos=JSONObject().apply{photoUris.forEach{(id,uri)->put(id,uri)}}
+    writeSynced(File(temp,TX_PHOTO_URIS),photos.toString().toByteArray(Charsets.UTF_8))
+    writeSynced(File(temp,TX_STATE),TX_PENDING.toByteArray(Charsets.UTF_8))
+    require(temp.renameTo(target)){ "Не удалось зафиксировать журнал безопасного восстановления" }
+   }catch(t:Throwable){
+    temp.deleteRecursively()
+    throw t
+   }
+  }
+
+  private fun discardUncommittedRestoreTransaction(context:Context){
+   val dir=restoreTransactionDir(context)
+   val state=runCatching{File(dir,TX_STATE).readText(Charsets.UTF_8).trim()}.getOrNull()
+   if(state==TX_PENDING)dir.deleteRecursively()
+  }
+
+  private fun cleanupTransactionTemps(context:Context){
+   context.filesDir.listFiles{f->f.isDirectory&&f.name.startsWith(TX_PREFIX)}.orEmpty().forEach{it.deleteRecursively()}
+  }
+
+  internal fun commitRestoreTransaction(context:Context){
+   val dir=restoreTransactionDir(context)
+   if(!dir.exists())return
+   val state=runCatching{File(dir,TX_STATE).readText(Charsets.UTF_8).trim()}.getOrNull()
+   require(state==TX_PENDING){ "Некорректное состояние журнала восстановления" }
+   writeSynced(File(dir,TX_STATE),TX_COMMITTED.toByteArray(Charsets.UTF_8))
+   // From this durable marker onward the new Room + metadata state is authoritative. Cleanup is
+   // idempotent and may safely finish on the next process start if the process dies here.
+   runCatching{finalizeCommittedRestoreTransaction(context)}
+  }
+
+  private fun finalizeCommittedRestoreTransaction(context:Context){
+   val dir=restoreTransactionDir(context)
+   if(!dir.exists())return
+   val state=runCatching{File(dir,TX_STATE).readText(Charsets.UTF_8).trim()}.getOrNull()
+   if(state!=TX_COMMITTED)return
+   val photoObject=runCatching{JSONObject(File(dir,TX_PHOTO_URIS).readText(Charsets.UTF_8))}.getOrNull()
+   if(photoObject!=null){
+    val oldUris=buildSet<String>{
+     photoObject.keys().forEach{id->photoObject.optString(id).takeIf{it.isNotBlank()}?.let{add(it)}}
+    }
+    val repo=MeterRepository(context,MeterDatabase.get(context),false,false)
+    repo.cleanupRemovedPhotos(oldUris)
+   }
+   dir.deleteRecursively()
+  }
+
+  internal fun rollbackRestoreTransaction(context:Context){
+   val dir=restoreTransactionDir(context)
+   if(!dir.exists())return
+   val state=runCatching{File(dir,TX_STATE).readText(Charsets.UTF_8).trim()}.getOrNull()
+   if(state==TX_COMMITTED){finalizeCommittedRestoreTransaction(context);return}
+   val rollbackFile=File(dir,TX_ROLLBACK)
+   val photoFile=File(dir,TX_PHOTO_URIS)
+   require(rollbackFile.isFile&&photoFile.isFile){ "Журнал восстановления повреждён; автоматический откат невозможен" }
+   val payload=MeterTransfer.parseBackup(rollbackFile.readBytes())
+   val photoObject=JSONObject(photoFile.readText(Charsets.UTF_8))
+   val rollbackAddresses=payload.addresses.map{address->address.copy(meters=address.meters.map{meter->meter.copy(readings=meter.readings.map{reading->
+    if(reading.photoUri==null)reading else reading.copy(photoUri=photoObject.optString(reading.id).takeIf{it.isNotBlank()}?:error("В журнале отсутствует исходное фото ${reading.id}"))
+   })})}
+   val repo=MeterRepository(context,MeterDatabase.get(context),false,false)
+   val targetPhotos=repo.dao.readings().mapNotNull{it.photoUri}.toSet()
+   repo.restoreValidated(rollbackAddresses,payload.submissions,false)
+   BackupMetadataStore.applyMetadataOnly(context,payload.metadata,rollbackAddresses)
+   repo.cleanupRemovedPhotos(targetPhotos)
+   dir.deleteRecursively()
+  }
+ }
 }

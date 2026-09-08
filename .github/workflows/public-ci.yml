@@ -52,6 +52,29 @@ jobs:
           test -n "$(find meter-reader/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$(find meter-reader/app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' -print -quit)"
 
+      - name: Verify release APK and AAB permissions
+        run: |
+          set -euo pipefail
+          RELEASE_APK=$(find meter-reader/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)
+          RELEASE_AAB=$(find meter-reader/app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' -print -quit)
+          AAPT=$(find "${ANDROID_HOME:?}/build-tools" -type f -name aapt -perm -111 | sort -V | tail -n 1)
+          test -x "$AAPT"
+          "$AAPT" dump permissions "$RELEASE_APK" | tee release-apk-permissions.txt
+          if grep -Eq 'android.permission.(INTERNET|ACCESS_NETWORK_STATE)' release-apk-permissions.txt; then
+            echo 'Unexpected network permission in built release APK' >&2
+            exit 1
+          fi
+          curl --fail --location --silent --show-error \
+            https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar \
+            --output "$RUNNER_TEMP/bundletool.jar"
+          java -jar "$RUNNER_TEMP/bundletool.jar" dump manifest --bundle="$RELEASE_AAB" --module=base > release-aab-manifest.xml
+          if grep -Eq 'android.permission.(INTERNET|ACCESS_NETWORK_STATE)' release-aab-manifest.xml; then
+            echo 'Unexpected network permission in built release AAB manifest' >&2
+            cat release-aab-manifest.xml >&2
+            exit 1
+          fi
+          echo 'Release APK/AAB network-permission check OK'
+
       - name: Upload build outputs
         uses: actions/upload-artifact@v4
         with:

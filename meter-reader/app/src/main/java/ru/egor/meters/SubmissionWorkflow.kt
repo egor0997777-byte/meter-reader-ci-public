@@ -3,9 +3,7 @@ package ru.egor.meters
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
-import java.time.Instant
 import java.time.YearMonth
-import java.time.ZoneId
 import java.util.UUID
 
 data class TransmissionTemplate(
@@ -110,7 +108,7 @@ object SubmissionWorkflow {
             val pointId = meter.meteringPointId ?: meter.id
             if (pointId !in selected) return@forEach
             val reading = meter.readings
-                .filter { readingPeriod(it) == period }
+                .filter { BillingPeriodResolver.readingPeriod(it) == period }
                 .maxByOrNull { it.timestamp }
             if (reading == null) {
                 missing += pointId
@@ -204,11 +202,6 @@ object SubmissionWorkflow {
     }
 
     internal fun submissionMatchesTemplate(submission: Submission, template: TransmissionTemplate): Boolean {
-        // Stable template identity exists only for submissions created by the hardened flow.
-        // v1.3 stored no template identifier; recipient text is not unique, so assigning a legacy
-        // row to a specific template would recreate cross-template false positives. Legacy rows
-        // still contribute to address-level status, but template-level status deliberately fails
-        // closed until that template is explicitly submitted under the new identity.
         return submissionBelongsToTemplate(submission.id, template.id)
     }
 
@@ -222,11 +215,4 @@ object SubmissionWorkflow {
         template.meteringPointIds.ifEmpty {
             address.meters.filter { it.status != "closed" }.map { it.meteringPointId ?: it.id }.toSet()
         }
-
-    private fun readingPeriod(reading: Reading): YearMonth? = reading.billingPeriod?.let {
-        runCatching { YearMonth.parse(it) }.getOrNull()
-    } ?: runCatching {
-        // Legacy compatibility only. New walkthrough readings must set billingPeriod explicitly.
-        YearMonth.from(Instant.ofEpochMilli(reading.timestamp).atZone(ZoneId.systemDefault()))
-    }.getOrNull()
 }

@@ -17,6 +17,7 @@ on:
       - '.github/scripts/android-v14-fault-regression-compat.sh'
       - '.github/scripts/android-v14-enospc.sh'
       - '.github/scripts/android-v14-app-lock.sh'
+      - '.github/scripts/android-v14-kill-oversize.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:
 
@@ -100,6 +101,7 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-app-lock.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-enospc.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-kill-oversize.sh"
 
       - name: Upload regression screenshots
         if: always()

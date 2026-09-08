@@ -29,6 +29,11 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTop" />
+        <activity
+            android:name=".TakeReadingsShortcutActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true" />
         <activity android:name=".V07MainActivity" android:exported="false" />
         <activity android:name=".V010MainActivity" android:exported="false" />
         <activity android:name=".V011MainActivity" android:exported="false" />
@@ -40,6 +45,9 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
     </application>
 </manifest>

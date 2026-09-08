@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_take_readings_short">Снять показания</string>
+    <string name="shortcut_take_readings_long">Сразу открыть месячный обход</string>
+</resources>

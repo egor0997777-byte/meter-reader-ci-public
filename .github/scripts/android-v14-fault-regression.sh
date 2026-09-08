@@ -56,8 +56,22 @@ restore_valid(){
 }
 copy_db(){
   adb shell am force-stop "$PACKAGE_NAME" >/dev/null; sleep .5
+  rm -f "$DB_COPY" "$DB_COPY-wal" "$DB_COPY-shm"
   adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$DB_COPY"
   test -s "$DB_COPY"
+  if adb shell "run-as $PACKAGE_NAME test -f databases/meter-reader.db-wal"; then
+    adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db-wal > "$DB_COPY-wal"
+  fi
+  if adb shell "run-as $PACKAGE_NAME test -f databases/meter-reader.db-shm"; then
+    adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db-shm > "$DB_COPY-shm"
+  fi
+}
+copy_snapshot(){
+  local dst="$1"
+  rm -f "$dst" "$dst-wal" "$dst-shm"
+  cp "$DB_COPY" "$dst"
+  if test -f "$DB_COPY-wal"; then cp "$DB_COPY-wal" "$dst-wal"; fi
+  if test -f "$DB_COPY-shm"; then cp "$DB_COPY-shm" "$dst-shm"; fi
 }
 
 # The normal v1.4 regression creates this real Room-backed archive immediately before us.
@@ -114,9 +128,9 @@ adb shell test -s "$photo_path"
 # Simulate restore A being older than one hour; later failures must not clean it up by age.
 adb shell "touch -t 202609072000.00 '${photo_path%/*}'" || true
 
-# Capture exact committed A state before attempting B.
+# Capture exact committed A state before attempting B, including WAL sidecars.
 copy_db
-cp "$DB_COPY" "$GITHUB_WORKSPACE/v14-A-before-failed-B.db"
+copy_snapshot "$GITHUB_WORKSPACE/v14-A-before-failed-B.db"
 
 # Restore B must fail during archive parsing, before confirmation/commit.
 open_data_tools

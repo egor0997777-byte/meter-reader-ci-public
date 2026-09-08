@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ci-fix-v1.4
+      - ci-fix-v2.0
     paths:
       - 'meter-reader/**'
       - '.github/scripts/android-preview.sh'
@@ -18,6 +19,7 @@ on:
       - '.github/scripts/android-v14-enospc.sh'
       - '.github/scripts/android-v14-app-lock.sh'
       - '.github/scripts/android-v14-kill-oversize.sh'
+      - '.github/scripts/android-v20-shortcut.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:
 
@@ -63,8 +65,13 @@ jobs:
           set -euo pipefail
           test -s "$APK_PATH"
           unzip -t "$APK_PATH" >/dev/null
-          grep -q 'versionCode = 140' meter-reader/app/build.gradle.kts
-          grep -q 'versionName = "1.4.0"' meter-reader/app/build.gradle.kts
+          if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then
+            grep -q 'versionCode = 200' meter-reader/app/build.gradle.kts
+            grep -q 'versionName = "2.0.0"' meter-reader/app/build.gradle.kts
+          else
+            grep -q 'versionCode = 140' meter-reader/app/build.gradle.kts
+            grep -q 'versionName = "1.4.0"' meter-reader/app/build.gradle.kts
+          fi
           AAPT=$(find "${ANDROID_HOME:?}/build-tools" -type f -name aapt -perm -111 | sort -V | tail -n 1)
           test -x "$AAPT"
           "$AAPT" dump permissions "$APK_PATH" | tee debug-permissions.txt
@@ -96,6 +103,7 @@ jobs:
           script: |
             bash "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-v14-compat.sh"
+            if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then bash "$GITHUB_WORKSPACE/.github/scripts/android-v20-shortcut.sh"; fi
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression-compat.sh"
@@ -107,7 +115,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: meter-reader-v1.4-regression-screenshots
+          name: meter-reader-${{ github.ref_name }}-regression-screenshots
           path: android-preview-artifacts/*.png
           if-no-files-found: warn
           retention-days: 7
@@ -116,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: meter-reader-v1.4-emulator-apk
+          name: meter-reader-${{ github.ref_name }}-emulator-apk
           path: ${{ env.APK_PATH }}
           if-no-files-found: error
           retention-days: 7

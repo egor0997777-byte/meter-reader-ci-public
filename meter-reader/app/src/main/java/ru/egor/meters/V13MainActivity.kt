@@ -91,7 +91,7 @@ class V13MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = C13) {
                 val address = data.firstOrNull { it.id == walkAddressId }
                 if (address == null) {
-                    Hub13(data, repo, reminderStore, session.addressId, session.period, ::startWalk, ::resumeWalk,
+                    Hub13(data, repo, reminderStore, templateStore, session.addressId, session.period, ::startWalk, ::resumeWalk,
                         openMeters = { startActivity(Intent(this, V011MainActivity::class.java)) },
                         openTariffs = { startActivity(Intent(this, V012MainActivity::class.java)) },
                         openReminders = { startActivity(Intent(this, V010MainActivity::class.java)) },
@@ -139,6 +139,7 @@ class V13MainActivity : ComponentActivity() {
 @Composable
 private fun Hub13(
     data: List<Address>, repo: MeterRepository, reminderStore: ReminderSettingsStore,
+    templateStore: TransmissionTemplateStore,
     resumableAddressId: String?, resumablePeriod: YearMonth?, startWalk: (String, YearMonth) -> Unit,
     resumeWalk: (String, YearMonth) -> Unit,
     openMeters: () -> Unit, openTariffs: () -> Unit, openReminders: () -> Unit, openData: () -> Unit, openPrivacy: () -> Unit
@@ -158,7 +159,7 @@ private fun Hub13(
         item {
             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = Color.White) {
                 Column(Modifier.padding(16.dp)) {
-                    Text(periodStatus13(data, repo, reminderStore, month), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    Text(periodStatus13(data, repo, reminderStore, templateStore, month), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                     Spacer(Modifier.height(6.dp)); Text("В этом периоде снято $completedCount из $activeCount", color = M13, fontSize = 13.sp)
                     Spacer(Modifier.height(14.dp))
                     if (resume != null) {
@@ -170,7 +171,7 @@ private fun Hub13(
                         val progress = only?.let { progressByAddress[it.id] }
                         when {
                             only != null && progress != null && progress.activeCount > 0 -> {
-                                val submissionStatus = SubmissionWorkflow.statusForAddress(repo, only, month)
+                                val submissionStatus = SubmissionStatusPolicy.forTemplates(repo, only, templateStore.list(only), month)
                                 val action = when {
                                     progress.remainingCount > 0 -> "Снять показания · осталось ${progress.remainingCount}"
                                     submissionStatus != SubmissionStatus.COMPLETE -> "Проверить и передать"
@@ -190,7 +191,7 @@ private fun Hub13(
             item { Text("Адреса", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }
             data.forEach { address -> item {
                 val progress = progressByAddress.getValue(address.id)
-                val submissionStatus = if (progress.activeCount == 0) SubmissionStatus.NONE else SubmissionWorkflow.statusForAddress(repo, address, month)
+                val submissionStatus = if (progress.activeCount == 0) SubmissionStatus.NONE else SubmissionStatusPolicy.forTemplates(repo, address, templateStore.list(address), month)
                 val subtitle = when {
                     progress.activeCount == 0 -> "Нет активных счётчиков"
                     submissionStatus == SubmissionStatus.COMPLETE -> "Передано"
@@ -269,7 +270,7 @@ private fun SubmissionSummary13(
     var message by remember { mutableStateOf<String?>(null) }
     var revision by remember { mutableIntStateOf(0) }
     val active = address.meters.filter { it.status != "closed" }
-    val overall = key(revision) { SubmissionWorkflow.statusForAddress(repo, address, period) }
+    val overall = key(revision, templates) { SubmissionStatusPolicy.forTemplates(repo, address, templates, period) }
 
     LazyColumn(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 10.dp), contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Показания готовы", fontSize = 28.sp, fontWeight = FontWeight.Bold); Text("${address.name} · $period", color = M13); Text(statusText13(overall), color = M13, fontSize = 13.sp) }
@@ -345,6 +346,6 @@ private fun share13(ctx: Context, text: String) { ctx.startActivity(Intent.creat
 private fun readingPeriod13(reading: Reading): YearMonth? = BillingPeriodResolver.readingPeriod(reading)
 private fun liveDelta13(previous: String?, current: String?, integerDigits: Int): String { if (previous == null || current.isNullOrBlank()) return "Расход появится после ввода"; val normalized = MeterHistory.normalizeReadingText(current) ?: return "Проверьте формат"; val result = MeterHistory.consumption(previous, normalized, integerDigits, false); return when { result.lowerThanPrevious -> "Меньше прошлого значения — нужна проверка"; result.amount != null -> "Расход: ${MeterHistory.format(result.amount)}"; else -> "Проверьте значение" } }
 private fun statusText13(status: SubmissionStatus): String = when (status) { SubmissionStatus.NONE -> "Ещё не передано"; SubmissionStatus.PARTIAL -> "Передано частично"; SubmissionStatus.COMPLETE -> "Передано" }
-private fun periodStatus13(data: List<Address>, repo: MeterRepository, store: ReminderSettingsStore, month: YearMonth): String { if (data.isEmpty()) return "Добавьте первый адрес"; val today = LocalDate.now(); val statuses = data.map { address -> val settings = store.getAddress(address.id); val progress = MonthlyWalkPlanner.progress(address, month); when (SubmissionWorkflow.statusForAddress(repo, address, month)) { SubmissionStatus.COMPLETE -> "Передано"; SubmissionStatus.PARTIAL -> "Передано частично"; SubmissionStatus.NONE -> when { progress.activeCount == 0 -> "Нет активных счётчиков"; progress.isComplete -> "Снято — осталось передать"; progress.completedCount > 0 -> "Частично снято"; today.dayOfMonth < settings.startDay.coerceAtMost(month.lengthOfMonth()) -> "Ещё рано"; today.dayOfMonth > settings.endDay.coerceAtMost(month.lengthOfMonth()) -> "Срок передачи прошёл"; else -> "Пора снять показания" } } }; return if (statuses.distinct().size == 1) statuses.first() else "Есть адреса, требующие внимания" }
+private fun periodStatus13(data: List<Address>, repo: MeterRepository, store: ReminderSettingsStore, templateStore: TransmissionTemplateStore, month: YearMonth): String { if (data.isEmpty()) return "Добавьте первый адрес"; val today = LocalDate.now(); val statuses = data.map { address -> val settings = store.getAddress(address.id); val progress = MonthlyWalkPlanner.progress(address, month); when (SubmissionStatusPolicy.forTemplates(repo, address, templateStore.list(address), month)) { SubmissionStatus.COMPLETE -> "Передано"; SubmissionStatus.PARTIAL -> "Передано частично"; SubmissionStatus.NONE -> when { progress.activeCount == 0 -> "Нет активных счётчиков"; progress.isComplete -> "Снято — осталось передать"; progress.completedCount > 0 -> "Частично снято"; today.dayOfMonth < settings.startDay.coerceAtMost(month.lengthOfMonth()) -> "Ещё рано"; today.dayOfMonth > settings.endDay.coerceAtMost(month.lengthOfMonth()) -> "Срок передачи прошёл"; else -> "Пора снять показания" } } }; return if (statuses.distinct().size == 1) statuses.first() else "Есть адреса, требующие внимания" }
 
 @Composable private fun HubCard13(title: String, body: String, onClick: () -> Unit) { Card(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(horizontal = 16.dp, vertical = 13.dp)) { Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(2.dp)); Text(body, color = M13, fontSize = 12.sp) } } }

@@ -1,4 +1,3 @@
-// CI retry: v1.4 tree unchanged semantically; retrigger Android Preview after runner startup failure.
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -12,8 +11,8 @@ android {
         applicationId = "ru.egor.meters"
         minSdk = 26
         targetSdk = 37
-        versionCode = 140
-        versionName = "1.4.0"
+        versionCode = 200
+        versionName = "2.0.0"
         ksp { arg("room.schemaLocation", "$projectDir/schemas") }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

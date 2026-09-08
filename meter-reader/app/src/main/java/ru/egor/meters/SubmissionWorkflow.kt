@@ -202,6 +202,11 @@ object SubmissionWorkflow {
     }
 
     internal fun submissionMatchesTemplate(submission: Submission, template: TransmissionTemplate): Boolean {
+        // Stable template identity exists only for submissions created by the hardened flow.
+        // v1.3 stored no template identifier; recipient text is not unique, so assigning a legacy
+        // row to a specific template would recreate cross-template false positives. Legacy rows
+        // still contribute to address-level status, but template-level status deliberately fails
+        // closed until that template is explicitly submitted under the new identity.
         return submissionBelongsToTemplate(submission.id, template.id)
     }
 

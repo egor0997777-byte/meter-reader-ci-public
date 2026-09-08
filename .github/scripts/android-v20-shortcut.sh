@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# CI-only provenance trigger: meter-reader tree is verified separately against the private HEAD.
 
 UI_XML="$GITHUB_WORKSPACE/v20-shortcut-window.xml"
 DB_FILE="$GITHUB_WORKSPACE/v20-shortcut.db"

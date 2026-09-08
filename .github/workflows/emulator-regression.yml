@@ -15,6 +15,7 @@ on:
       - '.github/scripts/android-v14-backup-restore-compat.sh'
       - '.github/scripts/android-v14-fault-regression.sh'
       - '.github/scripts/android-v14-fault-regression-compat.sh'
+      - '.github/scripts/android-v14-app-lock.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:
 
@@ -96,6 +97,7 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression-compat.sh"
+            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-app-lock.sh"
 
       - name: Upload regression screenshots
         if: always()

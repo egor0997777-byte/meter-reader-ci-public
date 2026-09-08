@@ -27,6 +27,7 @@ class ReminderWorker(
         val today = LocalDate.now()
         val month = YearMonth.from(today)
         val repo = MeterRepository(applicationContext)
+        val templateStore = TransmissionTemplateStore(applicationContext)
         val addresses = repo.load()
 
         addresses.forEach { address ->
@@ -35,7 +36,12 @@ class ReminderWorker(
                 today,
                 TransferWindow(settings.startDay, settings.endDay, settings.enabled)
             )
-            val submissionStatus = SubmissionWorkflow.statusForAddress(repo, address, month)
+            val submissionStatus = SubmissionStatusPolicy.forTemplates(
+                repo,
+                address,
+                templateStore.list(address),
+                month
+            )
             if (ReminderPolicy.shouldSendTransferReminder(transferStatus, submissionStatus)) {
                 post(
                     id = stableId("transfer:${address.id}"),

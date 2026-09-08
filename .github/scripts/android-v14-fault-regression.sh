@@ -49,7 +49,8 @@ restore_valid(){
   select_download_file "$file"
   wait_text "Восстановить резервную копию?" 30
   tap_text "Восстановить"
-  wait_text "Данные восстановлены" 30
+  # Production v1.4 confirmation dialog uses this exact success copy.
+  wait_text "Резервная копия восстановлена" 30
   tap_text "OK"
   sleep .7
 }

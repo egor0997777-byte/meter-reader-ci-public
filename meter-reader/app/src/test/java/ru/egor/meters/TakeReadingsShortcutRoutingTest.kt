@@ -54,6 +54,24 @@ class TakeReadingsShortcutRoutingTest {
     }
 
     @Test
+    fun completedCurrentPeriodDoesNotSilentlyStartDuplicateWalk() {
+        val complete = Address(
+            id = "complete",
+            name = "Complete",
+            meters = listOf(
+                Meter(
+                    id = "water",
+                    name = "Water",
+                    unit = "m3",
+                    readings = listOf(Reading(value = 10.0, valueText = "10", billingPeriod = "2026-09"))
+                )
+            )
+        )
+
+        assertNull(TakeReadingsShortcutRouting.resolve(listOf(complete), null, null, september))
+    }
+
+    @Test
     fun closedMetersDoNotCreateFalseRemainingWork() {
         val address = Address(
             id = "home",

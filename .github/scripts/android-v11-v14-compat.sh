@@ -4,12 +4,13 @@ set -euo pipefail
 source_script="$GITHUB_WORKSPACE/.github/scripts/android-v11-flow.sh"
 temp_script="$RUNNER_TEMP/android-v11-v14-compat.sh"
 
-python3 - "$source_script" "$temp_script" "${GITHUB_REF_NAME:-}" <<'PY'
+python3 - "$source_script" "$temp_script" "$GITHUB_WORKSPACE/meter-reader/app/build.gradle.kts" <<'PY'
 from pathlib import Path
 import sys
 
 src = Path(sys.argv[1]).read_text()
-branch = sys.argv[3]
+build_file = Path(sys.argv[3]).read_text()
+is_v2 = 'versionCode = 200' in build_file and 'versionName = "2.0.0"' in build_file
 
 # Hardened v1.4 validates configured/default meter digit counts before save.
 # Cold water defaults to five integer digits, so the old six-digit 000013
@@ -25,7 +26,7 @@ for old, new in common.items():
         raise SystemExit(f"Expected compatibility marker missing: {old}")
     src = src.replace(old, new)
 
-if branch == 'ci-fix-v2.0':
+if is_v2:
     # v2.0 treats already-valid current-period readings as completed. The dataset
     # created by android-preview has a valid electricity reading but an invalid
     # six-digit cold-water replacement seed, so exactly one point remains.

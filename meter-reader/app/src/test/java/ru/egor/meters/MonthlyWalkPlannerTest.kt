@@ -1,6 +1,7 @@
 package ru.egor.meters
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.YearMonth
@@ -48,5 +49,27 @@ class MonthlyWalkPlannerTest {
 
         assertTrue(progress.isComplete)
         assertEquals(setOf("cold", "power"), MonthlyWalkPlanner.completedMeterIds(address, period))
+    }
+
+    @Test
+    fun invalidLatestReadingDoesNotCreateFalseCompletedStatus() {
+        val meter = Meter(
+            id = "water",
+            name = "Water",
+            unit = "m3",
+            integerDigits = 3,
+            fractionDigits = 0,
+            readings = listOf(
+                Reading(value = 123.0, valueText = "123", timestamp = 1L, billingPeriod = "2026-09"),
+                Reading(value = 1234.0, valueText = "1234", timestamp = 2L, billingPeriod = "2026-09")
+            )
+        )
+        val address = Address(id = "home", name = "Home", meters = listOf(meter))
+
+        val progress = MonthlyWalkPlanner.progress(address, period)
+
+        assertEquals(0, progress.completedCount)
+        assertEquals(1, progress.remainingCount)
+        assertFalse(progress.isComplete)
     }
 }

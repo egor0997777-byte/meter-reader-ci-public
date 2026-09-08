@@ -14,9 +14,7 @@ data class MonthlyAddressProgress(
 object MonthlyWalkPlanner {
     fun progress(address: Address, period: YearMonth): MonthlyAddressProgress {
         val active = address.meters.filter { it.status != "closed" }
-        val completed = active.count { meter ->
-            meter.readings.any { BillingPeriodResolver.readingPeriod(it) == period }
-        }
+        val completed = active.count { hasUsableReading(it, period) }
         return MonthlyAddressProgress(active.size, completed)
     }
 
@@ -24,7 +22,17 @@ object MonthlyWalkPlanner {
         address.meters
             .asSequence()
             .filter { it.status != "closed" }
-            .filter { meter -> meter.readings.any { BillingPeriodResolver.readingPeriod(it) == period } }
+            .filter { hasUsableReading(it, period) }
             .map { it.id }
             .toSet()
+
+    private fun hasUsableReading(meter: Meter, period: YearMonth): Boolean {
+        val reading = meter.readings
+            .filter { BillingPeriodResolver.readingPeriod(it) == period }
+            .maxByOrNull { it.timestamp }
+            ?: return false
+        val sourceValues = reading.zoneValues.takeIf { it.isNotEmpty() }
+            ?: mapOf("TOTAL" to MeterHistory.readingText(reading))
+        return ReadingValidator.normalizeForMeter(sourceValues, meter) != null
+    }
 }

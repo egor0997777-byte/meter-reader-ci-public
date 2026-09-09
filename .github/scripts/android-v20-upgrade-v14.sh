@@ -81,7 +81,11 @@ for apk in "$V14_TEST_APK" "$V20_TEST_APK"; do
 done
 
 signer_digest() {
-  "$APKSIGNER" verify --print-certs "$1" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}'
+  # apksigner output prefixes vary by signing scheme/build-tools version
+  # (for example "Signer:" vs "Signer #1:" vs "V3.0 Signer:"). The
+  # certificate digest label itself is stable, so key off that instead.
+  "$APKSIGNER" verify --print-certs "$1" \
+    | awk -F': ' '/certificate SHA-256 digest:/ {print $2; exit}'
 }
 v14_signer=$(signer_digest "$V14_TEST_APK")
 v20_signer=$(signer_digest "$V20_TEST_APK")

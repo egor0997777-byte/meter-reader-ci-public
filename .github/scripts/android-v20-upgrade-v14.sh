@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CURRENT_APK="$GITHUB_WORKSPACE/meter-reader/app/build/outputs/apk/debug/app-debug.apk"
+V14_BRANCH="ci-fix-v1.4"
+V14_EXPECTED_TREE="0bd8f07848eb679b155e5027b82fcdbb03babb9d"
+WORKTREE="$RUNNER_TEMP/meter-reader-v14-upgrade"
+V14_DB="$RUNNER_TEMP/meter-reader-v14-before.db"
+V20_DB="$RUNNER_TEMP/meter-reader-v20-after-v14-upgrade.db"
+
+# ci-fix-v1.4 was independently proven to contain the exact meter-reader tree
+# merged into private main for v1.4. Build it in the same job so both debug APKs
+# use the same debug signing key and Android can exercise a real in-place update.
+git fetch --depth=1 origin "$V14_BRANCH"
+rm -rf "$WORKTREE"
+git worktree add --detach "$WORKTREE" FETCH_HEAD
+actual_tree=$(git -C "$WORKTREE" rev-parse HEAD:meter-reader)
+if [[ "$actual_tree" != "$V14_EXPECTED_TREE" ]]; then
+  echo "Unexpected v1.4 meter-reader tree: $actual_tree" >&2
+  exit 1
+fi
+grep -q 'versionCode = 140' "$WORKTREE/meter-reader/app/build.gradle.kts"
+grep -q 'versionName = "1.4.0"' "$WORKTREE/meter-reader/app/build.gradle.kts"
+gradle -p "$WORKTREE/meter-reader" :app:assembleDebug --stacktrace
+V14_APK="$WORKTREE/meter-reader/app/build/outputs/apk/debug/app-debug.apk"
+test -s "$V14_APK"
+test -s "$CURRENT_APK"
+
+adb uninstall "$PACKAGE_NAME" >/dev/null 2>&1 || true
+adb install "$V14_APK" >/dev/null
+
+# Seed data through the legacy on-device representation that v1.4 itself migrates
+# into Room. This gives the upgrade test real v1.4-owned persisted state rather
+# than copying a database produced by v2.0.
+legacy_json='[{"id":"upgrade-v14-address","name":"Upgrade v1.4 Home","account":"LS-140","recipient":"Provider 140","meters":[{"id":"upgrade-v14-meter","name":"Холодная вода","unit":"м³","kind":"cold_water","serial":"V14-CW","integerDigits":5,"fractionDigits":0,"tariffZones":["TOTAL"],"readings":[{"id":"upgrade-v14-reading","value":123.0,"valueText":"00123","timestamp":1788200000000,"note":"from v1.4"}]}]}]'
+escaped=$(python3 - "$legacy_json" <<'PY'
+import html,sys
+print(html.escape(sys.argv[1], quote=True))
+PY
+)
+printf '%s\n' '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>' '<map>' "    <string name=\"addresses\">$escaped</string>" '</map>' > "$RUNNER_TEMP/v14-meters.xml"
+adb push "$RUNNER_TEMP/v14-meters.xml" /data/local/tmp/v14-meters.xml >/dev/null
+adb shell "run-as $PACKAGE_NAME mkdir -p shared_prefs && run-as $PACKAGE_NAME cp /data/local/tmp/v14-meters.xml shared_prefs/meters.xml"
+adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.V13MainActivity" >/dev/null
+sleep 2
+adb shell am force-stop "$PACKAGE_NAME" >/dev/null
+adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$V14_DB"
+test -s "$V14_DB"
+python3 - "$V14_DB" <<'PY'
+import sqlite3,sys
+p=sys.argv[1]
+db=sqlite3.connect(p)
+assert db.execute('pragma integrity_check').fetchone()[0] == 'ok'
+assert db.execute('pragma user_version').fetchone()[0] == 5
+assert db.execute("select name,account,recipient from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home','LS-140','Provider 140')
+row=db.execute("select valueText from readings where id='upgrade-v14-reading'").fetchone()
+if row is None:
+    row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()
+assert row and row[0] == '00123', row
+print('v1.4 pre-upgrade state OK')
+PY
+
+# Real package-manager update: no uninstall/data clear between v1.4 and v2.0.
+adb install -r "$CURRENT_APK" >/dev/null
+version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//p' | head -n1 | tr -d '\r')
+[[ "$version" == "2.0.0" ]] || { echo "Expected v2.0.0 after upgrade, got $version" >&2; exit 1; }
+adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.V13MainActivity" >/dev/null
+sleep 2
+adb shell am force-stop "$PACKAGE_NAME" >/dev/null
+adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$V20_DB"
+test -s "$V20_DB"
+python3 - "$V20_DB" <<'PY'
+import sqlite3,sys
+p=sys.argv[1]
+db=sqlite3.connect(p)
+assert db.execute('pragma integrity_check').fetchone()[0] == 'ok'
+assert db.execute('pragma foreign_key_check').fetchall() == []
+assert db.execute('pragma user_version').fetchone()[0] == 5
+assert db.execute("select name,account,recipient from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home','LS-140','Provider 140')
+row=db.execute("select valueText from readings where id='upgrade-v14-reading'").fetchone()
+if row is None:
+    row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()
+assert row and row[0] == '00123', row
+meter=db.execute("select name,serial,integerDigits,fractionDigits from meters where id='upgrade-v14-meter'").fetchone()
+assert meter == ('Холодная вода','V14-CW',5,0), meter
+print('v1.4 -> v2.0 in-place upgrade OK: Room data and exact reading text preserved')
+PY
+
+git worktree remove --force "$WORKTREE" || true

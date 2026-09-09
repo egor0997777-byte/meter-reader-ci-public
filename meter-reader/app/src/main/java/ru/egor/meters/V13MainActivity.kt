@@ -163,7 +163,7 @@ private fun Hub13(
                     Spacer(Modifier.height(6.dp)); Text("В этом периоде снято $completedCount из $activeCount", color = M13, fontSize = 13.sp)
                     Spacer(Modifier.height(14.dp))
                     if (resume != null) {
-                        Button(onClick = { resumeWalk(resume.id, resumablePeriod ?: month) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) {
+                        Button(onClick = { resumeWalk(resume.id, resumablePeriod ?: month) }, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) {
                             Text("Продолжить обход · ${resume.name}", fontWeight = FontWeight.SemiBold)
                         }
                     } else {
@@ -177,11 +177,11 @@ private fun Hub13(
                                     submissionStatus != SubmissionStatus.COMPLETE -> "Проверить и передать"
                                     else -> "Посмотреть сводку"
                                 }
-                                Button(onClick = { startWalk(only.id, month) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) {
+                                Button(onClick = { startWalk(only.id, month) }, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) {
                                     Text(action, fontWeight = FontWeight.SemiBold)
                                 }
                             }
-                            data.isEmpty() -> Button(onClick = openMeters, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Text("Добавить адрес и счётчик") }
+                            data.isEmpty() -> Button(onClick = openMeters, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) { Text("Добавить адрес и счётчик") }
                         }
                     }
                 }
@@ -252,7 +252,7 @@ private fun Walkthrough13(
             val lowers = zones.any { zone -> val prev = previousValues[zone] ?: return@any false; val cur = normalized[zone] ?: return@any false; MeterHistory.consumption(prev, cur, integerDigits, false).lowerThanPrevious }
             if (lowers && !allowLower) { allowLower = true; message = "Значение меньше прошлого. Проверьте цифры. Если это переполнение, нажмите «Сохранить» ещё раз."; return@Button }
             saveReading(current, normalized, note, location, lowers)
-        }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Text(if (allowLower) "Сохранить с подтверждением" else "Сохранить и дальше", fontWeight = FontWeight.SemiBold) } }
+        }, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) { Text(if (allowLower) "Сохранить с подтверждением" else "Сохранить и дальше", fontWeight = FontWeight.SemiBold) } }
         item { TextButton(onClick = { skip(current.id) }, modifier = Modifier.fillMaxWidth()) { Text("Пропустить в этом периоде") } }
         item { Text("Фото и расширенное редактирование доступны в «Учёт и история». В обходе фото не обязательно.", color = M13, fontSize = 11.sp) }
     }
@@ -311,7 +311,7 @@ private fun SubmissionSummary13(
             } }
         } }
         message?.let { item { Text(it, color = M13, fontSize = 13.sp) } }
-        item { Button(onClick = finish, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(18.dp)) { Text("Готово", fontWeight = FontWeight.SemiBold) } }
+        item { Button(onClick = finish, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) { Text("Готово", fontWeight = FontWeight.SemiBold) } }
         item { TextButton(onClick = exit, modifier = Modifier.fillMaxWidth()) { Text("Вернуться позже") } }
     }
 

@@ -34,6 +34,32 @@ for old, new in replacements.items():
         raise SystemExit(f"Expected legacy preview marker missing: {old}")
     src = src.replace(old, new)
 
+# GitHub's API 35 emulator occasionally surfaces an ANR dialog from Pixel Launcher
+# immediately after boot. That system dialog can cover the app even though the APK
+# installed and the activity launched successfully. Dismiss only this known launcher
+# ANR and retry the app launch once; product assertions remain unchanged.
+old_start_app = 'start_app(){ adb shell am force-stop "$PACKAGE_NAME" >/dev/null; adb shell am start -W -f 0x10008000 -n "$PACKAGE_NAME/$PACKAGE_NAME$MAIN_ACTIVITY" >/dev/null; wait_text "Снять → проверить → передать"; }'
+new_start_app = '''start_app(){
+ adb shell am force-stop "$PACKAGE_NAME" >/dev/null
+ adb shell am start -W -f 0x10008000 -n "$PACKAGE_NAME/$PACKAGE_NAME$MAIN_ACTIVITY" >/dev/null
+ if ! wait_text "Снять → проверить → передать" 6; then
+   ui_dump
+   if grep -Fq "Pixel Launcher isn't responding" "$UI_XML"; then
+     echo "Dismissing Pixel Launcher ANR and retrying app launch" >&2
+     tap_text "Close app"
+     adb shell am force-stop "$PACKAGE_NAME" >/dev/null
+     adb shell am start -W -f 0x10008000 -n "$PACKAGE_NAME/$PACKAGE_NAME$MAIN_ACTIVITY" >/dev/null
+     wait_text "Снять → проверить → передать" 20
+   else
+     echo "Preview launch failed without the known Pixel Launcher ANR" >&2
+     return 1
+   fi
+ fi
+}'''
+if old_start_app not in src:
+    raise SystemExit("Expected patched start_app marker missing")
+src = src.replace(old_start_app, new_start_app, 1)
+
 # Keep the tariff-cost fixture deterministic across a UTC/local midnight rollover.
 # The production estimator correctly requires a tariff to be active on the later
 # reading of each interval. The legacy script used the editor's default "today",

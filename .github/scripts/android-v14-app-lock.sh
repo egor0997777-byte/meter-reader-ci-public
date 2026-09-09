@@ -16,6 +16,12 @@ PY
 wait_text(){ local wanted="$1"; local tries="${2:-30}"; for ((i=1;i<=tries;i++)); do has_text "$wanted" && return 0; sleep .5; done; echo "Timed out waiting for $wanted" >&2; ui_dump; test -f "$UI_XML" && cat "$UI_XML" >&2; return 1; }
 activity_stack_has_gate(){ adb shell dumpsys activity activities | grep -q 'ru.egor.meters/.AppUnlockActivity'; }
 wait_gate(){ for _ in {1..30}; do activity_stack_has_gate && return 0; sleep .3; done; adb shell dumpsys activity activities >&2; return 1; }
+assert_protected_content_hidden(){
+  if has_text "Снять → проверить → передать"; then
+    echo "Protected launcher content is visible behind lock gate" >&2
+    exit 1
+  fi
+}
 
 # Configure a real device credential so AppUnlockActivity cannot legitimately auto-disable itself.
 adb shell locksettings clear --old 1234 >/dev/null 2>&1 || true
@@ -39,10 +45,7 @@ wait_gate
 # Cancel the system credential sheet. The app gate itself must remain and protected content must not surface.
 adb shell input keyevent KEYCODE_BACK >/dev/null
 wait_text "Мои счётчики заблокированы" 30
-if has_text "Снять → проверить → передать"; then
-  echo "Protected launcher content is visible behind lock gate" >&2
-  exit 1
-fi
+assert_protected_content_hidden
 
 # Back from the gate must background the task rather than reveal the protected launcher.
 adb shell input keyevent KEYCODE_BACK >/dev/null
@@ -57,10 +60,33 @@ adb shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 >/dev/
 wait_gate
 adb shell input keyevent KEYCODE_BACK >/dev/null
 wait_text "Мои счётчики заблокированы" 30
+assert_protected_content_hidden
+
+# The packaged app shortcut uses TakeReadingsShortcutActivity. Directly starting that exact
+# exported shortcut target is the same routing entry proven by android-v20-shortcut.sh; it must
+# not bypass the application-level lock or reveal walkthrough data.
+adb shell am force-stop "$PACKAGE_NAME" >/dev/null
+adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.TakeReadingsShortcutActivity" >/dev/null
+wait_gate
+adb shell input keyevent KEYCODE_BACK >/dev/null
+wait_text "Мои счётчики заблокированы" 30
+assert_protected_content_hidden
+if adb shell dumpsys activity activities | grep -A8 'mResumedActivity' | grep -q 'ru.egor.meters/.V13MainActivity'; then
+  echo "Shortcut entry revealed protected launcher behind lock gate" >&2
+  exit 1
+fi
+
+# Back from a shortcut-originated gate must still background the task rather than expose routed content.
+adb shell input keyevent KEYCODE_BACK >/dev/null
+sleep .7
+if adb shell dumpsys activity activities | grep -A4 'mResumedActivity' | grep -Eq 'ru.egor.meters/\.(V13MainActivity|TakeReadingsShortcutActivity)'; then
+  echo "Back from shortcut lock gate revealed protected app content" >&2
+  exit 1
+fi
 
 # Clean up credential and preference so later CI additions are not contaminated.
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null
 adb shell "run-as $PACKAGE_NAME rm -f shared_prefs/security_settings.xml" >/dev/null 2>&1 || true
 adb shell locksettings clear --old 1234 >/dev/null
 
-echo "v1.4 app-lock regression OK: cold start, launcher re-entry/foreground and Back cannot bypass the application-level gate."
+echo "v2.0 app-lock regression OK: cold start, launcher re-entry/foreground, Back and shortcut entry cannot bypass the application-level gate."

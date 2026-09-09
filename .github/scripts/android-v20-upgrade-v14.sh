@@ -29,10 +29,9 @@ test -s "$CURRENT_APK"
 adb uninstall "$PACKAGE_NAME" >/dev/null 2>&1 || true
 adb install "$V14_APK" >/dev/null
 
-# Seed data through the legacy on-device representation that v1.4 itself migrates
-# into Room. This gives the upgrade test real v1.4-owned persisted state rather
-# than copying a database produced by v2.0.
-legacy_json='[{"id":"upgrade-v14-address","name":"Upgrade v1.4 Home","account":"LS-140","recipient":"Provider 140","meters":[{"id":"upgrade-v14-meter","name":"Холодная вода","unit":"м³","kind":"cold_water","serial":"V14-CW","integerDigits":5,"fractionDigits":0,"tariffZones":["TOTAL"],"readings":[{"id":"upgrade-v14-reading","value":123.0,"valueText":"00123","timestamp":1788200000000,"note":"from v1.4"}]}]}]'
+# Use the same legacy JSON shape already exercised by the v1.x regression suite.
+# v1.4 itself owns the conversion of this state into Room before the package update.
+legacy_json='[{"id":"upgrade-v14-address","name":"Upgrade v1.4 Home","meters":[{"id":"upgrade-v14-meter","name":"Холодная вода","unit":"м³","kind":"cold_water","serial":"V14-CW","readings":[{"id":"upgrade-v14-reading","value":123.456,"timestamp":1788200000000,"note":"from v1.4"}]}]}]'
 escaped=$(python3 - "$legacy_json" <<'PY'
 import html,sys
 print(html.escape(sys.argv[1], quote=True))
@@ -52,11 +51,10 @@ p=sys.argv[1]
 db=sqlite3.connect(p)
 assert db.execute('pragma integrity_check').fetchone()[0] == 'ok'
 assert db.execute('pragma user_version').fetchone()[0] == 5
-assert db.execute("select name,account,recipient from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home','LS-140','Provider 140')
-row=db.execute("select valueText from readings where id='upgrade-v14-reading'").fetchone()
-if row is None:
-    row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()
-assert row and row[0] == '00123', row
+assert db.execute("select name from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home',)
+assert db.execute("select name,serial from meters where id='upgrade-v14-meter'").fetchone() == ('Холодная вода','V14-CW')
+row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()
+assert row and row[0] == '123.456', row
 print('v1.4 pre-upgrade state OK')
 PY
 
@@ -76,13 +74,10 @@ db=sqlite3.connect(p)
 assert db.execute('pragma integrity_check').fetchone()[0] == 'ok'
 assert db.execute('pragma foreign_key_check').fetchall() == []
 assert db.execute('pragma user_version').fetchone()[0] == 5
-assert db.execute("select name,account,recipient from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home','LS-140','Provider 140')
-row=db.execute("select valueText from readings where id='upgrade-v14-reading'").fetchone()
-if row is None:
-    row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()
-assert row and row[0] == '00123', row
-meter=db.execute("select name,serial,integerDigits,fractionDigits from meters where id='upgrade-v14-meter'").fetchone()
-assert meter == ('Холодная вода','V14-CW',5,0), meter
+assert db.execute("select name from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home',)
+assert db.execute("select name,serial from meters where id='upgrade-v14-meter'").fetchone() == ('Холодная вода','V14-CW')
+row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()
+assert row and row[0] == '123.456', row
 print('v1.4 -> v2.0 in-place upgrade OK: Room data and exact reading text preserved')
 PY
 

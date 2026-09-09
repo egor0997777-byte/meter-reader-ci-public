@@ -22,6 +22,7 @@ on:
       - '.github/scripts/android-v14-kill-oversize.sh'
       - '.github/scripts/android-v20-shortcut.sh'
       - '.github/scripts/android-v20-kill-resume.sh'
+      - '.github/scripts/android-v20-visual-edge.sh'
       - '.github/scripts/run-emulator-regressions.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:

@@ -126,6 +126,24 @@ class SubmissionWorkflowTest {
         assertTrue(!submission.snapshotText.contains("Электричество"))
     }
 
+    @Test
+    fun pointIsNotTreatedAsSubmittedUntilEveryRequiredTariffZoneWasSubmitted() {
+        val required = setOf("p1" to "T1", "p1" to "T2", "p2" to "TOTAL")
+        val partial = setOf("p1" to "T1", "p2" to "TOTAL")
+
+        val submittedPoints = SubmissionWorkflow.fullySubmittedPointIds(required, partial)
+
+        assertEquals(setOf("p2"), submittedPoints)
+    }
+
+    @Test
+    fun pointBecomesSubmittedWhenAllRequiredTariffZonesArePresent() {
+        val required = setOf("p1" to "T1", "p1" to "T2", "p1" to "T3")
+        val submitted = setOf("p1" to "T1", "p1" to "T2", "p1" to "T3")
+
+        assertEquals(setOf("p1"), SubmissionWorkflow.fullySubmittedPointIds(required, submitted))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun refusesSubmissionWhenNoSelectedPointHasCurrentReading() {
         val period = YearMonth.of(2026, 9)

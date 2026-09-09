@@ -33,6 +33,22 @@ for old, new in replacements.items():
     if old not in src:
         raise SystemExit(f"Expected legacy preview marker missing: {old}")
     src = src.replace(old, new)
+
+# Keep the tariff-cost fixture deterministic across a UTC/local midnight rollover.
+# The production estimator correctly requires a tariff to be active on the later
+# reading of each interval. The legacy script used the editor's default "today",
+# so a CI run crossing midnight could make the just-created tariff newer than the
+# readings it is meant to price. Anchor all three tariffs at this month's first day;
+# the expected 10*6 + 5*3 + 2*2 = 79 calculation remains unchanged.
+tariff_editor_open = 'wait_text "Электричество"; tap_nth_text "Тарифы" 2; wait_text "История тарифов"; wait_text "Электричество"'
+if tariff_editor_open not in src:
+    raise SystemExit("Expected tariff editor marker missing")
+src = src.replace(
+    tariff_editor_open,
+    tariff_editor_open + '; replace_text "Действует с" "$(date +01.%m.%Y)"',
+    1,
+)
+
 Path(sys.argv[2]).write_text(src)
 PY
 

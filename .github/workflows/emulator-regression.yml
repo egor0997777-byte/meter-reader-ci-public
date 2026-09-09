@@ -23,6 +23,7 @@ on:
       - '.github/scripts/android-v20-shortcut.sh'
       - '.github/scripts/android-v20-kill-resume.sh'
       - '.github/scripts/android-v20-visual-edge.sh'
+      - '.github/scripts/android-v20-upgrade-v14.sh'
       - '.github/scripts/run-emulator-regressions.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:

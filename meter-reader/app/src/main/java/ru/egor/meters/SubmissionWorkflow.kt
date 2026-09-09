@@ -192,7 +192,7 @@ object SubmissionWorkflow {
             .map { it.meteringPointId to it.zone.uppercase() }
             .toSet()
             .intersect(requiredKeys)
-        val submittedPointIds = submittedKeys.map { it.first }.toSet()
+        val submittedPointIds = fullySubmittedPointIds(requiredKeys, submittedKeys)
         val status = when {
             requiredKeys.isNotEmpty() && submittedKeys.containsAll(requiredKeys) -> SubmissionStatus.COMPLETE
             submittedKeys.isNotEmpty() -> SubmissionStatus.PARTIAL
@@ -201,12 +201,15 @@ object SubmissionWorkflow {
         return TemplateSubmissionStatus(status, submittedPointIds, requiredPointIds)
     }
 
+    internal fun fullySubmittedPointIds(
+        requiredKeys: Set<Pair<String, String>>,
+        submittedKeys: Set<Pair<String, String>>
+    ): Set<String> = requiredKeys
+        .groupBy { it.first }
+        .filterValues { pointKeys -> pointKeys.all { it in submittedKeys } }
+        .keys
+
     internal fun submissionMatchesTemplate(submission: Submission, template: TransmissionTemplate): Boolean {
-        // Stable template identity exists only for submissions created by the hardened flow.
-        // v1.3 stored no template identifier; recipient text is not unique, so assigning a legacy
-        // row to a specific template would recreate cross-template false positives. Legacy rows
-        // still contribute to address-level status, but template-level status deliberately fails
-        // closed until that template is explicitly submitted under the new identity.
         return submissionBelongsToTemplate(submission.id, template.id)
     }
 

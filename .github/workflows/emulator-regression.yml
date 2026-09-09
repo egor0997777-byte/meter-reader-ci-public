@@ -22,6 +22,7 @@ on:
       - '.github/scripts/android-v14-kill-oversize.sh'
       - '.github/scripts/android-v20-shortcut.sh'
       - '.github/scripts/android-v20-kill-resume.sh'
+      - '.github/scripts/run-emulator-regressions.sh'
       - '.github/workflows/emulator-regression.yml'
   workflow_dispatch:
 
@@ -102,17 +103,16 @@ jobs:
           disk-size: 2048M
           emulator-boot-timeout: 1200
           disable-animations: true
-          script: |
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
-            if [ "$GITHUB_REF_NAME" = "ci-fix-v2.0" ]; then bash "$GITHUB_WORKSPACE/.github/scripts/android-v20-kill-resume.sh"; fi
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-v14-compat.sh"
-            if [ "$GITHUB_REF_NAME" = "ci-fix-v2.0" ]; then bash "$GITHUB_WORKSPACE/.github/scripts/android-v20-shortcut.sh"; fi
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore-compat.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression-compat.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-app-lock.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-enospc.sh"
-            bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-kill-oversize.sh"
+          script: bash "$GITHUB_WORKSPACE/.github/scripts/run-emulator-regressions.sh"
+
+      - name: Upload emulator regression logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meter-reader-${{ github.ref_name }}-emulator-logs
+          path: emulator-regression-logs/*.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload regression screenshots
         if: always()

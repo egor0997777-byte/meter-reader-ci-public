@@ -9,7 +9,7 @@ V20_TEST_APK="$RUNNER_TEMP/meter-reader-v20-from-v10-upgrade-test.apk"
 UI_XML="$RUNNER_TEMP/v10-upgrade-window.xml"
 PACKAGE_NAME="${PACKAGE_NAME:-ru.egor.meters}"
 V10_ARTIFACT_SHA256="9c445c371b7610da3519cc539d46500cf5f5b45a0d0639d4477fe95c9911afd3"
-V10_ARTIFACT_URL='https://sdmntpraustraliaeast.oaiusercontent.com/files/00000000-3ad0-81fa-ae96-d813597180f8/raw?se=2026-09-09T22%3A54%3A48Z&sp=r&sv=2026-02-06&sr=b&scid=131e7fc7-1ba1-5e47-8a0b-3ec4459bbf28&skoid=f8b66c09-1aa0-4801-9884-173c5cef2b8c&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-09T19%3A58%3A36Z&ske=2026-09-10T19%3A58%3A36Z&sks=b&skv=2026-02-06&sig=n20MSq%2BiGdWmZP7pZuus7ObIFmFMw%2BgKCOeBrlrhEx4%3D'
+V10_ARTIFACT_URL='https://sdmntprsouthcentralus.oaiusercontent.com/files/00000000-0ff8-81f7-95ba-9eeb6b2d530d/raw?se=2026-09-09T23%3A50%3A50Z&sp=r&sv=2026-02-06&sr=b&scid=d5b4e667-3184-5189-8864-4c8df03f71bd&skoid=ec8eb293-a61a-47e0-abd0-6051cc94b050&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-09T22%3A54%3A19Z&ske=2026-09-10T22%3A54%3A19Z&sks=b&skv=2026-02-06&sig=eDAnVUhse5j4PH/fgboaHiPReJw3UCjKCM3mjurK9YY%3D'
 
 test -s "$CURRENT_APK"
 command -v curl >/dev/null
@@ -129,8 +129,6 @@ adb uninstall "$PACKAGE_NAME" >/dev/null 2>&1 || true
 adb install "$V10_TEST_APK" >/dev/null
 start_app
 
-# Build persistent state through the actual v1.0 release UI, because that APK is
-# intentionally non-debuggable and therefore cannot be seeded with run-as.
 tap_text "Учёт показаний"
 wait_text "Добавить адрес"
 tap_text "Добавить адрес"
@@ -146,14 +144,12 @@ tap_text "Добавить"
 wait_text "Холодная вода"
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null
 
-# True package-manager in-place update: no uninstall and no data clear.
 adb install -r "$V20_TEST_APK" >/dev/null
 version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//p' | head -n1 | tr -d '\r')
 [[ "$version" == "2.0.0" ]] || { echo "Expected v2.0.0 after v1.0 upgrade, got $version" >&2; exit 1; }
 start_app
 wait_text "UpgradeV10"
 
-# The upgraded v2.0 test APK is debuggable, so inspect the migrated durable Room state.
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null
 DB="$RUNNER_TEMP/meter-reader-after-v10-upgrade.db"
 adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$DB"

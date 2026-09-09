@@ -36,4 +36,5 @@ run_stage "09-v14-enospc" "$GITHUB_WORKSPACE/.github/scripts/android-v14-enospc.
 run_stage "10-v14-kill-oversize" "$GITHUB_WORKSPACE/.github/scripts/android-v14-kill-oversize.sh"
 if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then
   run_stage "11-v20-visual-edge" "$GITHUB_WORKSPACE/.github/scripts/android-v20-visual-edge.sh"
+  run_stage "12-v20-upgrade-v14" "$GITHUB_WORKSPACE/.github/scripts/android-v20-upgrade-v14.sh"
 fi

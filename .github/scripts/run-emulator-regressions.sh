@@ -20,6 +20,12 @@ run_stage() {
   echo "===== PASS $name =====" | tee -a "$log"
 }
 
+# Run the v1.0 upgrade fixture first on v2.0. Its source ZIP is a connector-issued,
+# short-lived URL, so the content is SHA-256 pinned and must be consumed immediately
+# after the emulator becomes ready. This changes CI-only orchestration, never app code.
+if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then
+  run_stage "00-v20-upgrade-v10" "$GITHUB_WORKSPACE/.github/scripts/android-v20-upgrade-v10.sh"
+fi
 run_stage "01-preview-v13-compat" "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
 if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then
   run_stage "02-v20-kill-resume" "$GITHUB_WORKSPACE/.github/scripts/android-v20-kill-resume.sh"
@@ -37,5 +43,4 @@ run_stage "10-v14-kill-oversize" "$GITHUB_WORKSPACE/.github/scripts/android-v14-
 if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then
   run_stage "11-v20-visual-edge" "$GITHUB_WORKSPACE/.github/scripts/android-v20-visual-edge.sh"
   run_stage "12-v20-upgrade-v14" "$GITHUB_WORKSPACE/.github/scripts/android-v20-upgrade-v14.sh"
-  run_stage "13-v20-upgrade-v10" "$GITHUB_WORKSPACE/.github/scripts/android-v20-upgrade-v10.sh"
 fi

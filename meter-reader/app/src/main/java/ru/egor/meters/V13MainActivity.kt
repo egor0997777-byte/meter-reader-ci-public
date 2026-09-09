@@ -287,7 +287,10 @@ private fun SubmissionSummary13(
             }
             val isPartial = prepared.missingPointIds.isNotEmpty()
             Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Column(Modifier.weight(1f)) { Text(template.name, fontWeight = FontWeight.SemiBold); if (template.recipient.isNotBlank()) Text(template.recipient, color = M13, fontSize = 12.sp); Text(statusText13(status.status), color = M13, fontSize = 11.sp) }; TextButton(onClick = { editing = template }) { Text("Изменить") } }
+                Text(template.name, fontWeight = FontWeight.SemiBold)
+                if (template.recipient.isNotBlank()) Text(template.recipient, color = M13, fontSize = 12.sp)
+                Text(statusText13(status.status), color = M13, fontSize = 11.sp)
+                TextButton(onClick = { editing = template }, contentPadding = PaddingValues(0.dp)) { Text("Изменить") }
                 if (isPartial) {
                     Text("Не заполнено точек: ${prepared.missingPointIds.size}", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                     Text("Заполненную часть можно передать отдельно; общий статус останется частичным.", color = M13, fontSize = 11.sp)

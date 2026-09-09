@@ -5,8 +5,21 @@ CURRENT_APK="$GITHUB_WORKSPACE/meter-reader/app/build/outputs/apk/debug/app-debu
 V14_BRANCH="ci-fix-v1.4"
 V14_EXPECTED_TREE="0bd8f07848eb679b155e5027b82fcdbb03babb9d"
 WORKTREE="$RUNNER_TEMP/meter-reader-v14-upgrade"
-V14_DB="$RUNNER_TEMP/meter-reader-v14-before.db"
-V20_DB="$RUNNER_TEMP/meter-reader-v20-after-v14-upgrade.db"
+V14_DB_DIR="$RUNNER_TEMP/meter-reader-v14-before"
+V20_DB_DIR="$RUNNER_TEMP/meter-reader-v20-after-v14-upgrade"
+
+pull_room_snapshot() {
+  local target_dir="$1"
+  rm -rf "$target_dir"
+  mkdir -p "$target_dir"
+  adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$target_dir/meter-reader.db"
+  test -s "$target_dir/meter-reader.db"
+  for suffix in -wal -shm; do
+    if adb shell "run-as $PACKAGE_NAME test -f databases/meter-reader.db${suffix}" >/dev/null 2>&1; then
+      adb exec-out run-as "$PACKAGE_NAME" cat "databases/meter-reader.db${suffix}" > "$target_dir/meter-reader.db${suffix}"
+    fi
+  done
+}
 
 # ci-fix-v1.4 was independently proven to contain the exact meter-reader tree
 # merged into private main for v1.4. Build it in the same job so both debug APKs
@@ -43,14 +56,19 @@ adb shell "run-as $PACKAGE_NAME mkdir -p shared_prefs && run-as $PACKAGE_NAME cp
 adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.V13MainActivity" >/dev/null
 sleep 2
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null
-adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$V14_DB"
-test -s "$V14_DB"
-python3 - "$V14_DB" <<'PY'
+
+# Room uses WAL. A bare copy of meter-reader.db can expose an old header/schema
+# even though the live database is valid. Pull the complete DB family so SQLite
+# evaluates exactly the durable state that Android will preserve across install -r.
+pull_room_snapshot "$V14_DB_DIR"
+python3 - "$V14_DB_DIR/meter-reader.db" <<'PY'
 import sqlite3,sys
 p=sys.argv[1]
 db=sqlite3.connect(p)
+version=db.execute('pragma user_version').fetchone()[0]
+print(f'v1.4 pre-upgrade user_version={version}')
 assert db.execute('pragma integrity_check').fetchone()[0] == 'ok'
-assert db.execute('pragma user_version').fetchone()[0] == 5
+assert version == 5, version
 assert db.execute("select name from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home',)
 assert db.execute("select name,serial from meters where id='upgrade-v14-meter'").fetchone() == ('Холодная вода','V14-CW')
 row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()
@@ -65,15 +83,16 @@ version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//
 adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.V13MainActivity" >/dev/null
 sleep 2
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null
-adb exec-out run-as "$PACKAGE_NAME" cat databases/meter-reader.db > "$V20_DB"
-test -s "$V20_DB"
-python3 - "$V20_DB" <<'PY'
+pull_room_snapshot "$V20_DB_DIR"
+python3 - "$V20_DB_DIR/meter-reader.db" <<'PY'
 import sqlite3,sys
 p=sys.argv[1]
 db=sqlite3.connect(p)
+version=db.execute('pragma user_version').fetchone()[0]
+print(f'v2.0 post-upgrade user_version={version}')
 assert db.execute('pragma integrity_check').fetchone()[0] == 'ok'
 assert db.execute('pragma foreign_key_check').fetchall() == []
-assert db.execute('pragma user_version').fetchone()[0] == 5
+assert version == 5, version
 assert db.execute("select name from addresses where id='upgrade-v14-address'").fetchone() == ('Upgrade v1.4 Home',)
 assert db.execute("select name,serial from meters where id='upgrade-v14-meter'").fetchone() == ('Холодная вода','V14-CW')
 row=db.execute("select valueText from reading_values where readingId='upgrade-v14-reading' and zone='TOTAL'").fetchone()

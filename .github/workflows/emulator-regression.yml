@@ -104,9 +104,9 @@ jobs:
           disable-animations: true
           script: |
             bash "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
+            if [ "$GITHUB_REF_NAME" = "ci-fix-v2.0" ]; then bash "$GITHUB_WORKSPACE/.github/scripts/android-v20-kill-resume.sh"; fi
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v11-v14-compat.sh"
             if [ "$GITHUB_REF_NAME" = "ci-fix-v2.0" ]; then bash "$GITHUB_WORKSPACE/.github/scripts/android-v20-shortcut.sh"; fi
-            if [ "$GITHUB_REF_NAME" = "ci-fix-v2.0" ]; then bash "$GITHUB_WORKSPACE/.github/scripts/android-v20-kill-resume.sh"; fi
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v12-db-check.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-backup-restore-compat.sh"
             bash "$GITHUB_WORKSPACE/.github/scripts/android-v14-fault-regression-compat.sh"

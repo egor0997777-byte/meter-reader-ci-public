@@ -22,8 +22,11 @@ pull_room_snapshot() {
 }
 
 # ci-fix-v1.4 was independently proven to contain the exact meter-reader tree
-# merged into private main for v1.4. Build it in the same job so both debug APKs
-# use the same debug signing key and Android can exercise a real in-place update.
+# merged into private main for v1.4. Build it in the same job, then re-sign test-only
+# APK copies with one ephemeral CI certificate. GitHub-hosted jobs intentionally have
+# ephemeral debug keystores, and the emulator action may recreate Android user state;
+# package-manager upgrade validation requires both APKs to have the same signer.
+# The original product APKs are left untouched and remain the packaging artifacts.
 git fetch --depth=1 origin "$V14_BRANCH"
 rm -rf "$WORKTREE"
 git worktree add --detach "$WORKTREE" FETCH_HEAD
@@ -39,8 +42,59 @@ V14_APK="$WORKTREE/meter-reader/app/build/outputs/apk/debug/app-debug.apk"
 test -s "$V14_APK"
 test -s "$CURRENT_APK"
 
+APKSIGNER=$(find "${ANDROID_HOME:?}/build-tools" -type f -name apksigner -perm -111 | sort -V | tail -n 1)
+test -x "$APKSIGNER"
+command -v keytool >/dev/null
+
+echo "Original v1.4 debug signer:"
+"$APKSIGNER" verify --print-certs "$V14_APK"
+echo "Original v2.0 debug signer:"
+"$APKSIGNER" verify --print-certs "$CURRENT_APK"
+
+CI_KEYSTORE="$RUNNER_TEMP/meter-reader-upgrade-ci.p12"
+CI_STOREPASS="meter-reader-ci-upgrade"
+CI_ALIAS="meter-reader-ci-upgrade"
+rm -f "$CI_KEYSTORE"
+keytool -genkeypair -noprompt \
+  -keystore "$CI_KEYSTORE" \
+  -storetype PKCS12 \
+  -storepass "$CI_STOREPASS" \
+  -keypass "$CI_STOREPASS" \
+  -alias "$CI_ALIAS" \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 3650 \
+  -dname "CN=Meter Reader CI Upgrade Test,O=CI,C=US" >/dev/null
+
+V14_TEST_APK="$RUNNER_TEMP/meter-reader-v14-upgrade-test.apk"
+V20_TEST_APK="$RUNNER_TEMP/meter-reader-v20-upgrade-test.apk"
+cp "$V14_APK" "$V14_TEST_APK"
+cp "$CURRENT_APK" "$V20_TEST_APK"
+for apk in "$V14_TEST_APK" "$V20_TEST_APK"; do
+  "$APKSIGNER" sign \
+    --ks "$CI_KEYSTORE" \
+    --ks-key-alias "$CI_ALIAS" \
+    --ks-pass "pass:$CI_STOREPASS" \
+    --key-pass "pass:$CI_STOREPASS" \
+    "$apk"
+  "$APKSIGNER" verify --print-certs "$apk"
+done
+
+signer_digest() {
+  "$APKSIGNER" verify --print-certs "$1" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}'
+}
+v14_signer=$(signer_digest "$V14_TEST_APK")
+v20_signer=$(signer_digest "$V20_TEST_APK")
+test -n "$v14_signer"
+test -n "$v20_signer"
+if [[ "$v14_signer" != "$v20_signer" ]]; then
+  echo "CI upgrade APK signer mismatch after test-only signing" >&2
+  exit 1
+fi
+echo "CI upgrade signer equality proven: $v14_signer"
+
 adb uninstall "$PACKAGE_NAME" >/dev/null 2>&1 || true
-adb install "$V14_APK" >/dev/null
+adb install "$V14_TEST_APK" >/dev/null
 
 # Use the same legacy JSON shape already exercised by the v1.x regression suite.
 # v1.4 itself owns the conversion of this state into Room before the package update.
@@ -77,7 +131,7 @@ print('v1.4 pre-upgrade state OK')
 PY
 
 # Real package-manager update: no uninstall/data clear between v1.4 and v2.0.
-adb install -r "$CURRENT_APK" >/dev/null
+adb install -r "$V20_TEST_APK" >/dev/null
 version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//p' | head -n1 | tr -d '\r')
 [[ "$version" == "2.0.0" ]] || { echo "Expected v2.0.0 after upgrade, got $version" >&2; exit 1; }
 adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.V13MainActivity" >/dev/null

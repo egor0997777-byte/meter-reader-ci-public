@@ -140,7 +140,9 @@ print('v2 visual fixture created for', period)
 PY
 
 adb push "$DB_LOCAL" /data/local/tmp/v20-visual.db >/dev/null
-adb shell "run-as $PACKAGE_NAME cp /data/local/tmp/v20-visual.db databases/meter-reader.db && rm -f databases/meter-reader.db-wal databases/meter-reader.db-shm"
+# Replace all Room database files as the app uid. Leaving the previous WAL/SHM
+# beside a replaced main database can make SQLite replay stale empty state.
+adb shell "run-as $PACKAGE_NAME sh -c 'cp /data/local/tmp/v20-visual.db databases/meter-reader.db && rm -f databases/meter-reader.db-wal databases/meter-reader.db-shm'"
 
 # Approx. 274 x 488 dp on the Pixel 6 profile plus 130% system font: a compact,
 # intentionally stressful viewport rather than the normal 411 x 914 dp device.

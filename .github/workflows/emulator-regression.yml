@@ -8,6 +8,7 @@ on:
       - ci-fix-v2.0
     paths:
       - 'meter-reader/**'
+      - '.ci-source/retry-v10.txt'
       - '.github/scripts/android-preview.sh'
       - '.github/scripts/android-preview-v13-compat.sh'
       - '.github/scripts/android-v11-flow.sh'
@@ -50,7 +51,7 @@ jobs:
       - name: Prefetch exact v1.0 upgrade fixture
         if: github.ref_name == 'ci-fix-v2.0'
         env:
-          V10_ARTIFACT_URL: 'https://sdmntpreastus2.oaiusercontent.com/files/00000000-6f10-81f6-87f7-96024190383c/raw?se=2026-09-10T02%3A02%3A45Z&sp=r&sv=2026-02-06&sr=b&scid=3eafc8c4-9243-5775-8c5a-be6c7370ea4c&skoid=5cab1ff4-c20d-41dc-babb-df0c2cc21dd4&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-09T19%3A54%3A07Z&ske=2026-09-10T19%3A54%3A07Z&sks=b&skv=2026-02-06&sig=ANMy5RTLCRg1R8jgyCBiRB78SgKcL03g0I0SU34pZfA%3D'
+          V10_ARTIFACT_URL: 'https://sdmntpreastus2.oaiusercontent.com/files/00000000-8e5c-81f6-a7fa-1fda146ee490/raw?se=2026-09-10T04%3A13%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=a660ccc8-4659-5ef5-bc09-ecbdc3ff066e&skoid=5cab1ff4-c20d-41dc-babb-df0c2cc21dd4&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-10T02%3A13%3A30Z&ske=2026-09-11T02%3A13%3A30Z&sks=b&skv=2026-02-06&sig=LtCYjn7bKep1uISYaIIxrlU%2BGIm5R8IgH88f7maSqZo%3D'
         run: |
           set -euo pipefail
           curl --fail --location --retry 3 --output "$V10_ARTIFACT_ZIP" "$V10_ARTIFACT_URL"

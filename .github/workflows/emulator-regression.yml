@@ -1,5 +1,5 @@
 name: Meter Reader Emulator Regression
-# CI provenance trigger: private head 9c82691c5a42be62d8f041a6604b62e52c19afcd / meter-reader tree 245606a29bb5b1f1165f14625cb2bbaf0655196a
+# CI provenance trigger: private head 35a749ed3d6ea48be7e26deeba2e6486695474a7 / meter-reader tree 89d1081104e0e5d6b9bc1ea6e9d9065af009fe6e
 
 on:
   push:
@@ -23,6 +23,7 @@ on:
       - '.github/scripts/android-v20-shortcut.sh'
       - '.github/scripts/android-v20-kill-resume.sh'
       - '.github/scripts/android-v20-visual-edge.sh'
+      - '.github/scripts/android-v20-upgrade-v10.sh'
       - '.github/scripts/android-v20-upgrade-v14.sh'
       - '.github/scripts/run-emulator-regressions.sh'
       - '.github/workflows/emulator-regression.yml'
@@ -36,6 +37,7 @@ env:
   APK_PATH: meter-reader/app/build/outputs/apk/debug/app-debug.apk
   PACKAGE_NAME: ru.egor.meters
   MAIN_ACTIVITY: .V13MainActivity
+  V10_ARTIFACT_ZIP: ${{ runner.temp }}/android-v1-release.zip
 
 jobs:
   emulator-regression:
@@ -44,6 +46,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Prefetch exact v1.0 upgrade fixture
+        if: github.ref_name == 'ci-fix-v2.0'
+        env:
+          V10_ARTIFACT_URL: 'https://sdmntprwestus.oaiusercontent.com/files/00000000-c154-8230-829f-f2f127beeaf9/raw?se=2026-09-10T00%3A44%3A17Z&sp=r&sv=2026-02-06&sr=b&scid=a9ae27fe-92dc-5d54-8c98-2b9ea105573b&skoid=7399a3a4-0259-4d43-bcd6-a56ceeb4c28b&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-09T20%3A04%3A15Z&ske=2026-09-10T20%3A04%3A15Z&sks=b&skv=2026-02-06&sig=SgifrZFzo3JOH573YP2mGUzwGe7EIesJzzrqXLm20Js%3D'
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output "$V10_ARTIFACT_ZIP" "$V10_ARTIFACT_URL"
+          echo '9c445c371b7610da3519cc539d46500cf5f5b45a0d0639d4477fe95c9911afd3  '"$V10_ARTIFACT_ZIP" | sha256sum -c -
 
       - name: Setup Java 17
         uses: actions/setup-java@v5

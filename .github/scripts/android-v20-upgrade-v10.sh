@@ -2,21 +2,19 @@
 set -euo pipefail
 
 CURRENT_APK="$GITHUB_WORKSPACE/meter-reader/app/build/outputs/apk/debug/app-debug.apk"
-ARTIFACT_ZIP="$RUNNER_TEMP/android-v1-release.zip"
+ARTIFACT_ZIP="${V10_ARTIFACT_ZIP:-$RUNNER_TEMP/android-v1-release.zip}"
 V10_UNSIGNED="$RUNNER_TEMP/app-release-v1.0-unsigned.apk"
 V10_TEST_APK="$RUNNER_TEMP/meter-reader-v10-upgrade-test.apk"
 V20_TEST_APK="$RUNNER_TEMP/meter-reader-v20-from-v10-upgrade-test.apk"
 UI_XML="$RUNNER_TEMP/v10-upgrade-window.xml"
 PACKAGE_NAME="${PACKAGE_NAME:-ru.egor.meters}"
 V10_ARTIFACT_SHA256="9c445c371b7610da3519cc539d46500cf5f5b45a0d0639d4477fe95c9911afd3"
-V10_ARTIFACT_URL='https://sdmntprsouthcentralus.oaiusercontent.com/files/00000000-0ff8-81f7-95ba-9eeb6b2d530d/raw?se=2026-09-09T23%3A50%3A50Z&sp=r&sv=2026-02-06&sr=b&scid=d5b4e667-3184-5189-8864-4c8df03f71bd&skoid=ec8eb293-a61a-47e0-abd0-6051cc94b050&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-09T22%3A54%3A19Z&ske=2026-09-10T22%3A54%3A19Z&sks=b&skv=2026-02-06&sig=eDAnVUhse5j4PH/fgboaHiPReJw3UCjKCM3mjurK9YY%3D'
 
 test -s "$CURRENT_APK"
-command -v curl >/dev/null
+test -s "$ARTIFACT_ZIP"
 command -v unzip >/dev/null
 command -v keytool >/dev/null
 
-curl --fail --location --retry 3 --output "$ARTIFACT_ZIP" "$V10_ARTIFACT_URL"
 echo "$V10_ARTIFACT_SHA256  $ARTIFACT_ZIP" | sha256sum -c -
 unzip -p "$ARTIFACT_ZIP" apk/release/app-release-unsigned.apk > "$V10_UNSIGNED"
 test -s "$V10_UNSIGNED"

@@ -51,7 +51,7 @@ jobs:
       - name: Prefetch exact v1.0 upgrade fixture
         if: github.ref_name == 'ci-fix-v2.0'
         env:
-          V10_ARTIFACT_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-d934-81f5-9da9-c1cfb455ed9d/raw?se=2026-09-10T08%3A04%3A28Z&sp=r&sv=2026-02-06&sr=b&scid=3ec4faf9-1751-5270-be1b-b3b40287a67d&skoid=f28c0102-4d9d-4950-baf0-4a8e5f6cf9d4&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-10T03%3A12%3A47Z&ske=2026-09-11T03%3A12%3A47Z&sks=b&skv=2026-02-06&sig=9bass6x4hNj5YhOVpgysucsr4ssn7bbDzsWdnPKfDwI%3D'
+          V10_ARTIFACT_URL: 'https://sdmntpreastus2.oaiusercontent.com/files/00000000-58a8-81f6-8e55-2b208debc1ee/raw?se=2026-09-10T09%3A08%3A38Z&sp=r&sv=2026-02-06&sr=b&scid=f8e402a0-4948-5e82-af26-0b05b0b66da3&skoid=6658dbdd-f305-4d30-8f6b-d62218202cb9&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-10T04%3A57%3A59Z&ske=2026-09-11T04%3A57%3A59Z&sks=b&skv=2026-02-06&sig=r0r988D2CAtp5d5LTXwLChIsOkU/YBWKD42ffTLjdMM%3D'
         run: |
           set -euo pipefail
           curl --fail --location --retry 3 --output "$V10_ARTIFACT_ZIP" "$V10_ARTIFACT_URL"

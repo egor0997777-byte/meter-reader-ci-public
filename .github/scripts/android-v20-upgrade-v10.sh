@@ -119,10 +119,11 @@ replace_text() {
   sleep .3
 }
 start_app() {
+  local ready_text="${1:-Всё хранится на устройстве}"
   adb shell am force-stop "$PACKAGE_NAME" >/dev/null
   adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.V13MainActivity" >/dev/null 2>&1 || \
     adb shell am start -W -n "$PACKAGE_NAME/$PACKAGE_NAME.V013MainActivity" >/dev/null
-  wait_text "Всё хранится на устройстве"
+  wait_text "$ready_text"
 }
 
 adb uninstall "$PACKAGE_NAME" >/dev/null 2>&1 || true
@@ -147,7 +148,9 @@ adb shell am force-stop "$PACKAGE_NAME" >/dev/null
 adb install -r "$V20_TEST_APK" >/dev/null
 version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//p' | tr -d '\r' | tail -n 1)
 [[ "$version" == "2.0.0" ]] || { echo "Expected v2.0.0 after v1.0 upgrade, got $version" >&2; exit 1; }
-start_app
+# v2.0 intentionally has a status-first hub instead of the old v1.x privacy copy.
+# Wait for the new hub marker, then independently prove the v1.0 address survived.
+start_app "Снять → проверить → передать"
 wait_text "UpgradeV10"
 
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null

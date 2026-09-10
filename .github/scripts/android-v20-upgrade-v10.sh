@@ -24,8 +24,10 @@ APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -111 
 test -x "$AAPT"
 test -x "$APKSIGNER"
 
-v10_badging=$($AAPT dump badging "$V10_UNSIGNED" | head -n 1)
-echo "$v10_badging"
+# Capture the complete output first. With `set -o pipefail`, piping aapt into
+# `head -n 1` can make aapt exit with SIGPIPE (141) even though badging is valid.
+v10_badging=$($AAPT dump badging "$V10_UNSIGNED")
+printf '%s\n' "$v10_badging" | sed -n '1p'
 grep -q "package: name='ru.egor.meters'" <<<"$v10_badging"
 grep -q "versionCode='100'" <<<"$v10_badging"
 grep -q "versionName='1.0.0'" <<<"$v10_badging"
@@ -143,7 +145,7 @@ wait_text "Холодная вода"
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null
 
 adb install -r "$V20_TEST_APK" >/dev/null
-version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//p' | head -n1 | tr -d '\r')
+version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//p' | tr -d '\r' | tail -n 1)
 [[ "$version" == "2.0.0" ]] || { echo "Expected v2.0.0 after v1.0 upgrade, got $version" >&2; exit 1; }
 start_app
 wait_text "UpgradeV10"

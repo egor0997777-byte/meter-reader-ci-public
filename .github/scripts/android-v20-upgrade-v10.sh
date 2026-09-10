@@ -58,7 +58,7 @@ for apk in "$V10_TEST_APK" "$V20_TEST_APK"; do
 done
 
 signer_digest() {
-  "$APKSIGNER" verify --print-certs "$1" | awk -F': ' '/certificate SHA-256 digest:/ {print $2; exit}'
+  "$APKSIGNER" verify --print-certs "$1" | awk -F': ' '/certificate SHA-256 digest:/ {print $NF; exit}'
 }
 v10_signer=$(signer_digest "$V10_TEST_APK")
 v20_signer=$(signer_digest "$V20_TEST_APK")
@@ -148,9 +148,10 @@ adb shell am force-stop "$PACKAGE_NAME" >/dev/null
 adb install -r "$V20_TEST_APK" >/dev/null
 version=$(adb shell dumpsys package "$PACKAGE_NAME" | sed -n 's/.*versionName=//p' | tr -d '\r' | tail -n 1)
 [[ "$version" == "2.0.0" ]] || { echo "Expected v2.0.0 after v1.0 upgrade, got $version" >&2; exit 1; }
-# v2.0 intentionally has a status-first hub instead of the old v1.x privacy copy.
-# Wait for the new hub marker, then independently prove the v1.0 address survived.
+# v2.0 intentionally has a status-first hub instead of listing address names on the hub.
+# Prove the upgraded address through the user-visible history path, then verify the DB.
 start_app "Снять → проверить → передать"
+tap_text "Учёт и история"
 wait_text "UpgradeV10"
 
 adb shell am force-stop "$PACKAGE_NAME" >/dev/null

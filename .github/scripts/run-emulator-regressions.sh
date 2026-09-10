@@ -20,11 +20,13 @@ run_stage() {
   echo "===== PASS $name =====" | tee -a "$log"
 }
 
-# Run the v1.0 upgrade fixture first on v2.0. Its source ZIP is a connector-issued,
-# short-lived URL, so the content is SHA-256 pinned and must be consumed immediately
-# after the emulator becomes ready. This changes CI-only orchestration, never app code.
+# Run the v1.0 upgrade fixture first on v2.0. Its source ZIP is SHA-256 pinned.
+# The upgrade harness intentionally re-signs both APKs with a temporary CI key to
+# prove a real in-place package upgrade. Remove that temporary-signer installation
+# before continuing with the normal debug-signed regression suite.
 if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then
   run_stage "00-v20-upgrade-v10" "$GITHUB_WORKSPACE/.github/scripts/android-v20-upgrade-v10.sh"
+  adb uninstall "${PACKAGE_NAME:-ru.egor.meters}" >/dev/null 2>&1 || true
 fi
 run_stage "01-preview-v13-compat" "$GITHUB_WORKSPACE/.github/scripts/android-preview-v13-compat.sh"
 if [[ "$GITHUB_REF_NAME" == "ci-fix-v2.0" ]]; then

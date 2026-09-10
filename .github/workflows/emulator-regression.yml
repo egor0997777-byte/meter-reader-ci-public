@@ -37,7 +37,7 @@ env:
   APK_PATH: meter-reader/app/build/outputs/apk/debug/app-debug.apk
   PACKAGE_NAME: ru.egor.meters
   MAIN_ACTIVITY: .V13MainActivity
-  V10_ARTIFACT_ZIP: ${{ runner.temp }}/android-v1-release.zip
+  V10_ARTIFACT_ZIP: /tmp/android-v1-release.zip
 
 jobs:
   emulator-regression:
@@ -50,7 +50,7 @@ jobs:
       - name: Prefetch exact v1.0 upgrade fixture
         if: github.ref_name == 'ci-fix-v2.0'
         env:
-          V10_ARTIFACT_URL: 'https://sdmntprwestus.oaiusercontent.com/files/00000000-c154-8230-829f-f2f127beeaf9/raw?se=2026-09-10T00%3A44%3A17Z&sp=r&sv=2026-02-06&sr=b&scid=a9ae27fe-92dc-5d54-8c98-2b9ea105573b&skoid=7399a3a4-0259-4d43-bcd6-a56ceeb4c28b&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-09T20%3A04%3A15Z&ske=2026-09-10T20%3A04%3A15Z&sks=b&skv=2026-02-06&sig=SgifrZFzo3JOH573YP2mGUzwGe7EIesJzzrqXLm20Js%3D'
+          V10_ARTIFACT_URL: 'https://sdmntprwestus.oaiusercontent.com/files/00000000-13e8-8230-8a5f-313e91e45eab/raw?se=2026-09-10T00%3A45%3A51Z&sp=r&sv=2026-02-06&sr=b&scid=f68cf043-5c41-5443-9636-66f1d69494a5&skoid=7399a3a4-0259-4d43-bcd6-a56ceeb4c28b&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-09T20%3A01%3A55Z&ske=2026-09-10T20%3A01%3A55Z&sks=b&skv=2026-02-06&sig=Rkp7DKea%2Bn/X0PMz3qD0D%2BaoqVGlFsTlmFcTNSbuFb4%3D'
         run: |
           set -euo pipefail
           curl --fail --location --retry 3 --output "$V10_ARTIFACT_ZIP" "$V10_ARTIFACT_URL"
